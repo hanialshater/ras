@@ -409,7 +409,27 @@ This study remains exploratory.
 
 ---
 
-## 11. Next experiments
+## 11. Related work
+
+RSA sits at the intersection of several literatures. This section positions it against each and states what is and is not new.
+
+**Low-bit vector codes and random rotations.** Random projections followed by quantization are the classical route to compact codes: sign-of-projection hashing (Charikar, 2002) and locality-sensitive hashing more broadly (Indyk and Motwani, 1998), with structured rotations such as the fast Johnson–Lindenstrauss transform (Ailon and Chazelle, 2009) making the projection itself cheap. Product quantization (Jégou et al., 2011), optimized product quantization (Ge et al., 2013), anisotropic quantization (Guo et al., 2020), and RaBitQ (Gao and Long, 2024) learn or randomize codebooks to minimize distance-estimation error for approximate nearest neighbor search; RaBitQ in particular applies a random orthogonal rotation before bi-valued quantization and derives error bounds for the resulting distance estimator. Binary passage retrieval (Yamada et al., 2021) and Matryoshka representations (Kusupati et al., 2022) show that retrieval quality survives aggressive precision or dimensionality reduction. All of these evaluate a code by how well it preserves distances or ranking. RSA uses the same family of codes but asks a different question: how much *predicate-relevant* information survives, measured by classification fidelity of programs learned on top of the code rather than by ANN recall. The substrate diagnostic in Section 6.2 is that measurement.
+
+**Lookup-table execution.** The runtime primitive in RSA, a sum of table reads indexed by 4-bit codes, is the primitive that PQ Fast Scan (André et al., 2015) implements with SIMD in-register shuffles, that Bolt (Blalock and Guttag, 2017) uses for compressed similarity search, that MADDNESS (Blalock and Guttag, 2021) uses to approximate matrix products without multiplications, and that LUT-NN (Tang et al., 2023) uses to replace neural network layers with centroid lookups. QuickScorer (Lucchese et al., 2015) shows that additive ensembles can be scored for ranking with bit-vector operations rather than tree traversal. These systems tabulate distance components, layer outputs, or tree leaves. RSA tabulates learned semantic predicates. The kernel engineering these papers report is exactly what RSA has not yet done (Limitation 5), and PQ Fast Scan's 4-bit shuffle path is the natural implementation target.
+
+**Additive models and boosting.** Algorithm 1 is a generalized additive model (Hastie and Tibshirani, 1986) with optional pairwise terms, the GA2M family (Lou et al., 2012; Lou et al., 2013) as packaged in InterpretML's explainable boosting machines (Nori et al., 2019). The fitting procedure is Newton boosting with a second-order per-bin gain and L2 regularization, the leaf update of XGBoost (Chen and Guestrin, 2016) applied to histogram-binned features in the manner of LightGBM (Ke et al., 2017), within the general gradient-boosting framework of Friedman (2001). We claim no novelty in the learner. The contribution is the setting: the bins are a fixed random quantized substrate shared by every predicate, the coordinate budget is a hard compute constraint rather than a regularizer, and each coordinate is selected at most once so that the program size is the LUT-operation count.
+
+**Distillation, probes, and concept representations.** Compiling a teacher's judgments into a small student is knowledge distillation (Hinton et al., 2015); learning a concept as a simple function of a frozen representation is linear probing (Alain and Bengio, 2016), concept activation vectors (Kim et al., 2018), and concept bottleneck models (Koh et al., 2020). Attribute-based classification (Lampert et al., 2009) established that mid-level semantic attributes transfer across tasks. The independent-teacher pilot in Section 8 is cross-representation distillation: CLIP image judgments become sparse probes over a MiniLM-derived code. The failure of the original hard-box hypothesis is a small negative result on the strong form of the linear representation hypothesis (Park et al., 2024): concepts may be linearly decodable without being axis-aligned or box-shaped in a random basis.
+
+**Composition and negation.** Compositional retrieval typically learns a composed query representation: vector arithmetic (Mikolov et al., 2013), attributes as operators (Nagarajan and Grauman, 2018), text-image composition (Vo et al., 2019), and interactive fashion retrieval (Wu et al., 2021). CLIP prompt ensembles (Radford et al., 2021) compose at the text side. RSA instead composes independently learned predicates after Platt-style scalar calibration (Platt, 1999; Guo et al., 2017), using the independence approximation to the conjunction probability, a rule in the spirit of but not identical to a product of experts (Hinton, 2002). No conjunction is ever trained, which is what makes the algebra closed under new concepts.
+
+**Hybrid search and cascade ranking.** Filtered-DiskANN (Gollapudi et al., 2023) and ACORN (Patel et al., 2024) integrate structured predicates into graph-based ANN indexes; industrial systems such as Facebook search (Huang et al., 2020) and Amazon product search (Nigam et al., 2019) combine embedding retrieval with attribute filters. Cascade ranking (Wang et al., 2011) and cross-encoder reranking (Nogueira and Cho, 2019) motivate cheap intermediate stages, while learned sparse retrieval (Formal et al., 2021), late interaction (Khattab and Zaharia, 2020), and fixed-dimensional multi-vector encodings (Dhulipala et al., 2024) enrich the first stage. Filtered ANN handles predicates that exist as attributes. RSA targets predicates that do not, and it is designed as a cascade stage between ANN and the expensive ranker rather than as an index.
+
+**Anisotropy of sentence embeddings.** Sentence and token embeddings are known to be anisotropic (Ethayarajh, 2019), and whitening or flow-based normalization improves similarity-based retrieval (Li et al., 2020; Su et al., 2021). Our whitening ablation in Section 6.3 points the other way for predicate compilation: removing anisotropy hurts sparse programs monotonically, suggesting that the dominant directions carry concept-relevant signal that a sparse coordinate budget should exploit rather than flatten.
+
+---
+
+## 12. Next experiments
 
 The next decisive evaluation should contain **50–200 automatically generated compound queries** spanning categories and latent concepts, with independent supervision and repeated seeds. For every query, measure recall/purity/NDCG across candidate retention budgets such as 5%, 10%, 20%, 40%, and 100%, then aggregate the curves with confidence intervals.
 
@@ -427,7 +447,7 @@ Additional priorities:
 
 ---
 
-## 12. Conclusion
+## 13. Conclusion
 
 The strongest version of the original hypothesis—arbitrary semantic concepts become clean hard boxes in a random space—is not supported. A weaker and more useful result emerges.
 
@@ -445,10 +465,53 @@ If the result survives multi-query evaluation and real systems benchmarks, RSA c
 
 ## References
 
-1. Moses Charikar. *Similarity Estimation Techniques from Rounding Algorithms.* STOC, 2002.
-2. Jianyang Gao and Cheng Long. *RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound for Approximate Nearest Neighbor Search.* arXiv:2405.12497, 2024.
-3. Laxman Dhulipala, Majid Hadian, Rajesh Jayaram, Jason Lee, and Vahab Mirrokni. *MUVERA: Multi-Vector Retrieval via Fixed Dimensional Encodings.* NeurIPS, 2024.
-4. Alec Radford et al. *Learning Transferable Visual Models From Natural Language Supervision.* ICML, 2021.
-5. Nils Reimers and Iryna Gurevych. *Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks.* EMNLP-IJCNLP, 2019.
-6. Harsha Nori et al. *InterpretML: A Unified Framework for Machine Learning Interpretability.* 2019. (Related additive-model tooling; RSA uses a custom residual-boosted LUT formulation.)
-7. Dataset: `ashraq/fashion-product-images-small`, Hugging Face.
+- Ailon, N. and Chazelle, B. (2009). The fast Johnson–Lindenstrauss transform and approximate nearest neighbors. *SIAM Journal on Computing*, 39(1).
+- Alain, G. and Bengio, Y. (2016). Understanding intermediate layers using linear classifier probes. arXiv:1610.01644.
+- André, F., Kermarrec, A.-M., and Le Scouarnec, N. (2015). Cache locality is not enough: High-performance nearest neighbor search with product quantization fast scan. *PVLDB*, 9(4).
+- Blalock, D. and Guttag, J. (2017). Bolt: Accelerated data mining with fast vector compression. *KDD*.
+- Blalock, D. and Guttag, J. (2021). Multiplying matrices without multiplying. *ICML*.
+- Charikar, M. (2002). Similarity estimation techniques from rounding algorithms. *STOC*.
+- Chen, T. and Guestrin, C. (2016). XGBoost: A scalable tree boosting system. *KDD*.
+- Dhulipala, L., Hadian, M., Jayaram, R., Lee, J., and Mirrokni, V. (2024). MUVERA: Multi-vector retrieval via fixed dimensional encodings. *NeurIPS*.
+- Ethayarajh, K. (2019). How contextual are contextualized word representations? Comparing the geometry of BERT, ELMo, and GPT-2 embeddings. *EMNLP*.
+- Formal, T., Piwowarski, B., and Clinchant, S. (2021). SPLADE: Sparse lexical and expansion model for first stage ranking. *SIGIR*.
+- Friedman, J. H. (2001). Greedy function approximation: A gradient boosting machine. *Annals of Statistics*, 29(5).
+- Gao, J. and Long, C. (2024). RaBitQ: Quantizing high-dimensional vectors with a theoretical error bound for approximate nearest neighbor search. *SIGMOD*.
+- Ge, T., He, K., Ke, Q., and Sun, J. (2013). Optimized product quantization for approximate nearest neighbor search. *CVPR*.
+- Gollapudi, S., Karia, N., Sivashankar, V., Krishnaswamy, R., et al. (2023). Filtered-DiskANN: Graph algorithms for approximate nearest neighbor search with filters. *The Web Conference (WWW)*.
+- Guo, C., Pleiss, G., Sun, Y., and Weinberger, K. Q. (2017). On calibration of modern neural networks. *ICML*.
+- Guo, R., Sun, P., Lindgren, E., Geng, Q., Simcha, D., Chern, F., and Kumar, S. (2020). Accelerating large-scale inference with anisotropic vector quantization. *ICML*.
+- Hastie, T. and Tibshirani, R. (1986). Generalized additive models. *Statistical Science*, 1(3).
+- Hinton, G. E. (2002). Training products of experts by minimizing contrastive divergence. *Neural Computation*, 14(8).
+- Hinton, G., Vinyals, O., and Dean, J. (2015). Distilling the knowledge in a neural network. arXiv:1503.02531.
+- Huang, J.-T., Sharma, A., Sun, S., Xia, L., et al. (2020). Embedding-based retrieval in Facebook search. *KDD*.
+- Indyk, P. and Motwani, R. (1998). Approximate nearest neighbors: Towards removing the curse of dimensionality. *STOC*.
+- Jégou, H., Douze, M., and Schmid, C. (2011). Product quantization for nearest neighbor search. *IEEE TPAMI*, 33(1).
+- Ke, G., Meng, Q., Finley, T., Wang, T., Chen, W., Ma, W., Ye, Q., and Liu, T.-Y. (2017). LightGBM: A highly efficient gradient boosting decision tree. *NeurIPS*.
+- Khattab, O. and Zaharia, M. (2020). ColBERT: Efficient and effective passage search via contextualized late interaction over BERT. *SIGIR*.
+- Kim, B., Wattenberg, M., Gilmer, J., Cai, C., Wexler, J., Viegas, F., and Sayres, R. (2018). Interpretability beyond feature attribution: Quantitative testing with concept activation vectors (TCAV). *ICML*.
+- Koh, P. W., Nguyen, T., Tang, Y. S., Mussmann, S., Pierson, E., Kim, B., and Liang, P. (2020). Concept bottleneck models. *ICML*.
+- Kusupati, A., Bhatt, G., Rege, A., Wallingford, M., et al. (2022). Matryoshka representation learning. *NeurIPS*.
+- Lampert, C. H., Nickisch, H., and Harmeling, S. (2009). Learning to detect unseen object classes by between-class attribute transfer. *CVPR*.
+- Li, B., Zhou, H., He, J., Wang, M., Yang, Y., and Li, L. (2020). On the sentence embeddings from pre-trained language models. *EMNLP*.
+- Lou, Y., Caruana, R., and Gehrke, J. (2012). Intelligible models for classification and regression. *KDD*.
+- Lou, Y., Caruana, R., Gehrke, J., and Hooker, G. (2013). Accurate intelligible models with pairwise interactions. *KDD*.
+- Lucchese, C., Nardini, F. M., Orlando, S., Perego, R., Tonellotto, N., and Venturini, R. (2015). QuickScorer: A fast algorithm to rank documents with additive ensembles of regression trees. *SIGIR*.
+- Mikolov, T., Sutskever, I., Chen, K., Corrado, G., and Dean, J. (2013). Distributed representations of words and phrases and their compositionality. *NeurIPS*.
+- Nagarajan, T. and Grauman, K. (2018). Attributes as operators: Factorizing unseen attribute-object compositions. *ECCV*.
+- Nigam, P., Song, Y., Mohan, V., Lakshman, V., et al. (2019). Semantic product search. *KDD*.
+- Nogueira, R. and Cho, K. (2019). Passage re-ranking with BERT. arXiv:1901.04085.
+- Nori, H., Jenkins, S., Koch, P., and Caruana, R. (2019). InterpretML: A unified framework for machine learning interpretability. arXiv:1909.09223.
+- Park, K., Choe, Y. J., and Veitch, V. (2024). The linear representation hypothesis and the geometry of large language models. *ICML*.
+- Patel, L., Kraft, P., Guestrin, C., and Zaharia, M. (2024). ACORN: Performant and predicate-agnostic search over vector embeddings and structured data. *SIGMOD*.
+- Platt, J. C. (1999). Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods. In *Advances in Large Margin Classifiers*.
+- Radford, A., Kim, J. W., Hallacy, C., Ramesh, A., et al. (2021). Learning transferable visual models from natural language supervision. *ICML*.
+- Reimers, N. and Gurevych, I. (2019). Sentence-BERT: Sentence embeddings using Siamese BERT-networks. *EMNLP-IJCNLP*.
+- Su, J., Cao, J., Liu, W., and Ou, Y. (2021). Whitening sentence representations for better semantics and faster retrieval. arXiv:2103.15316.
+- Tang, X., Wang, Y., Cao, T., Zhang, L. L., Chen, Q., Cai, D., Liu, Y., and Yang, M. (2023). LUT-NN: Empower efficient neural network inference with centroid learning and table lookup. *MobiCom*.
+- Vo, N., Jiang, L., Sun, C., Murphy, K., Li, L.-J., Fei-Fei, L., and Hays, J. (2019). Composing text and image for image retrieval: An empirical odyssey. *CVPR*.
+- Wang, L., Lin, J., and Metzler, D. (2011). A cascade ranking model for efficient ranked retrieval. *SIGIR*.
+- Wang, W., Wei, F., Dong, L., Bao, H., Yang, N., and Zhou, M. (2020). MiniLM: Deep self-attention distillation for task-agnostic compression of pre-trained transformers. *NeurIPS*.
+- Wu, H., Gao, Y., Guo, X., Al-Halah, Z., Rennie, S., Grauman, K., and Feris, R. (2021). Fashion IQ: A new dataset towards retrieving images by natural language feedback. *CVPR*.
+- Yamada, I., Asai, A., and Hajishirzi, H. (2021). Efficient passage retrieval with hashing for open-domain question answering. *ACL*.
+- Dataset: `ashraq/fashion-product-images-small`, Hugging Face.
