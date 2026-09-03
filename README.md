@@ -21,17 +21,17 @@ Independent-teacher search pilot:
 - executor: RSA 4-bit codes + sparse LUT programs
 - query: `minimalist black office shoes not sporty`
 
-At a 40% retained candidate budget, RSA increased teacher-relevant recall from **0.420 → 0.652** while purity rose from **0.492 → 0.763**. At a 20% budget, recall improved **0.246 → 0.333** and purity **0.586 → 0.793**.
+At a 40% retained candidate budget, RSA increased teacher-relevant recall from **0.420 -> 0.652** while purity rose from **0.492 -> 0.763**. At a 20% budget, recall improved **0.246 -> 0.333** and purity **0.586 -> 0.793**.
 
 These are pilot results on one dataset and one detailed compound-query sweep, not yet production or multi-query evidence.
 
 ## Repository layout
 
-- `src/random_semantic_algebra_full.py` — exact runnable snapshot of the original reproducible experiment.
-- `src/rsa_v2.py` — exact runnable snapshot of the extended RSA v2 implementation: boosted LUTs, pair interactions, calibration, composition, whitening/random-dictionary ablations, teacher compilation and distillation.
-- `experiments/independent_teacher_search.py` — readable MiniLM-retrieval / CLIP-image-teacher search experiment with retention sweeps.
-- `paper/Random_Semantic_Algebra.md` — current paper source, including algorithms, pedagogical Mermaid figures, results, systems interpretation, and limitations.
-- `requirements.txt` — Python dependencies.
+- `src/random_semantic_algebra_full.py` - exact runnable snapshot of the original reproducible experiment.
+- `src/rsa_v2.py` - exact runnable snapshot of the extended RSA v2 implementation: boosted LUTs, pair interactions, calibration, composition, whitening/random-dictionary ablations, teacher compilation and distillation.
+- `experiments/independent_teacher_search.py` - readable MiniLM-retrieval / CLIP-image-teacher search experiment with retention sweeps.
+- `paper/Random_Semantic_Algebra.md` - current paper source, including algorithms, pedagogical Mermaid figures, results, systems interpretation, and limitations.
+- `requirements.txt` - Python dependencies.
 
 The two exact implementation snapshots are stored as self-extracting gzip payloads so the exact research-session code is preserved byte-for-byte while remaining executable through the repository connector.
 
@@ -41,12 +41,15 @@ Offline, an expensive teacher (VLM, human labels, or another semantic model) def
 
 ```text
 expensive semantic supervision
-          ↓ offline
+          |
+          v  offline
 compile reusable predicates
-          ↓
+          |
+          v
 fixed 192-byte/item RSA code
-          ↓ online
-ANN candidates → semantic program → cheap pruning → expensive ranker
+          |
+          v  online
+ANN candidates -> semantic program -> cheap pruning -> expensive ranker
 ```
 
 ## Quick start
@@ -58,11 +61,11 @@ pip install -r requirements.txt
 python src/random_semantic_algebra_full.py
 
 # Independent-teacher search pilot
-python experiments/independent_teacher_search.py
+python -m experiments.independent_teacher_search
 ```
 
 For the search pilot, a GPU is recommended because CLIP image embeddings are generated once offline. The RSA predicate compiler and online scoring are lightweight CPU operations in this prototype.
 
 ## Research status
 
-Exploratory research prototype. The next decisive experiment is a **50–200 compound-query benchmark** with independent semantic supervision, repeated seeds, aggregate quality-vs-candidate-budget curves, direct-conjunction ceilings, and measured packed CPU/SIMD latency.
+Exploratory research prototype. The next decisive experiment is a **50-200 compound-query benchmark** with independent semantic supervision, repeated seeds, aggregate quality-vs-candidate-budget curves, direct-conjunction ceilings, and measured packed CPU/SIMD latency.
