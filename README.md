@@ -30,7 +30,10 @@ These are pilot results on one dataset and one detailed compound-query sweep, no
 - `src/random_semantic_algebra_full.py` - exact runnable snapshot of the original reproducible experiment.
 - `src/rsa_v2.py` - exact runnable snapshot of the extended RSA v2 implementation: boosted LUTs, pair interactions, calibration, composition, whitening/random-dictionary ablations, teacher compilation and distillation.
 - `experiments/independent_teacher_search.py` - readable MiniLM-retrieval / CLIP-image-teacher search experiment with retention sweeps.
-- `paper/Random_Semantic_Algebra.md` - current paper source, including algorithms, pedagogical Mermaid figures, results, systems interpretation, and limitations.
+- `paper/Random_Semantic_Algebra.md` - long-form paper source.
+- `paper/icml/main.tex` - professional two-column ICML-style LaTeX manuscript with equations, pseudocode algorithms, TikZ/PGFPlots figures, tables, impact statement, references, and appendix.
+- `paper/icml/rsa_icml_like.sty` - self-contained ICML-like preprint style.
+- `paper/icml/README.md` - paper build instructions and submission-template note.
 - `requirements.txt` - Python dependencies.
 
 The two exact implementation snapshots are stored as self-extracting gzip payloads so the exact research-session code is preserved byte-for-byte while remaining executable through the repository connector.
@@ -62,6 +65,11 @@ python src/random_semantic_algebra_full.py
 
 # Independent-teacher search pilot
 python -m experiments.independent_teacher_search
+
+# ICML-style paper
+cd paper/icml
+pdflatex main.tex
+pdflatex main.tex
 ```
 
 For the search pilot, a GPU is recommended because CLIP image embeddings are generated once offline. The RSA predicate compiler and online scoring are lightweight CPU operations in this prototype.
