@@ -1,0 +1,38 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{rsa_icml_like}[2026/09/04 ICML-like preprint layout]
+\RequirePackage{times}
+\RequirePackage{microtype}
+\RequirePackage{fancyhdr}
+\RequirePackage{xcolor}
+\RequirePackage{caption}
+\RequirePackage{natbib}
+\RequirePackage{url}
+\RequirePackage{hyperref}
+\paperwidth=8.5in
+\paperheight=11in
+\setlength{\pdfpagewidth}{8.5in}
+\setlength{\pdfpageheight}{11in}
+\setlength{\textheight}{9.0in}
+\setlength{\textwidth}{6.75in}
+\setlength{\columnsep}{0.25in}
+\setlength{\oddsidemargin}{-0.23in}
+\setlength{\evensidemargin}{-0.23in}
+\setlength{\topmargin}{-0.36in}
+\setlength{\headheight}{11pt}
+\setlength{\headsep}{10pt}
+\setlength{\footskip}{24pt}
+\setlength{\emergencystretch}{1.5em}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Random Semantic Algebra}
+\fancyhead[R]{\small ICML-style preprint}
+\fancyfoot[C]{\small \thepage}
+\renewcommand{\headrulewidth}{0.5pt}
+\renewcommand{\footrulewidth}{0pt}
+\captionsetup{font=small,labelfont=bf}
+\hypersetup{colorlinks=true,linkcolor=[rgb]{0,0.08,0.45},citecolor=[rgb]{0,0.08,0.45},urlcolor=[rgb]{0,0.08,0.45}}
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0pt}
+\renewcommand{\section}{\@startsection{section}{1}{0pt}{-2.0ex plus -0.5ex minus -0.2ex}{1.0ex plus 0.2ex}{\large\bfseries}}
+\renewcommand{\subsection}{\@startsection{subsection}{2}{0pt}{-1.6ex plus -0.4ex minus -0.2ex}{0.8ex plus 0.2ex}{\normalsize\bfseries}}
+\renewcommand{\subsubsection}{\@startsection{subsubsection}{3}{0pt}{-1.2ex plus -0.3ex minus -0.2ex}{0.5ex plus 0.1ex}{\normalsize\bfseries}}
