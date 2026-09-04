@@ -1,0 +1,54 @@
+
+\twocolumn[
+\begin{@twocolumnfalse}
+\maketitle
+\vspace{-1.4em}
+\begin{abstract}
+Dense retrieval provides an effective similarity primitive, while structured search efficiently handles exact filters. Many useful search constraints---such as \emph{minimalist}, \emph{office-appropriate}, or \emph{technical}---are latent semantic predicates that are neither catalog attributes nor naturally expressed by a single query--item similarity. We introduce \emph{Random Semantic Algebra} (\rsa), which compiles such predicates into small, composable programs over a shared low-bit item representation. \rsa applies a fixed random orthogonal rotation followed by 4-bit quantization, yielding a 192-byte code per item. Concepts are represented by sparse lookup tables with a small number of pairwise interactions, and independently learned predicates compose through calibrated log-probability addition, supporting conjunction and negation without query-specific training.
+
+On a 30k-product mechanism benchmark, an all-coordinate 4-bit compilation matches a full-precision linear classifier (0.9334 vs. 0.9331 mean F1), while a sparse program reaches 0.9015. Our main evaluation uses 44,072 fashion products, MiniLM title embeddings as the retrieval representation, and CLIP image semantics as an independent teacher. Across three strict fit/calibration/test splits and 200 automatically generated compound queries per split, \rsa achieves 0.707 mean predicate F1 versus 0.745 for a full-precision linear semantic proxy. At a 20\% candidate budget, dense retrieval retains 0.207 of teacher-relevant items, while \rsa retains 0.330 and the full-precision proxy 0.363; candidate purity simultaneously rises from 0.425 to 0.571. Thus \rsa recovers 79\% of the additional recall available from the full-precision semantic proxy while operating on the low-bit substrate. These results support a systems hypothesis: expensive semantic supervision can be compiled offline into reusable, composable, and inexpensive search-time programs.
+\end{abstract}
+\vspace{0.7em}
+\end{@twocolumnfalse}
+]
+
+\section{Introduction}
+Modern search engines expose two mature computational languages. Dense retrieval expresses semantic similarity through inner products or cosine similarity. Structured retrieval expresses exact predicates---brand, size, category, availability---through inverted indexes, bitmaps, or relational filters. A large class of useful constraints is neither: \emph{minimalist}, \emph{office-appropriate}, \emph{technical}, \emph{quiet luxury}, and explicit negations such as \emph{not sporty} are semantic judgments rather than stored facts.
+
+A dense query vector can absorb these words into one score, but logical composition becomes implicit. At the other extreme, a large VLM or LLM can evaluate each predicate directly, but per-candidate model inference inside a retrieval loop is expensive. Recent semantic-operator systems and semantic-filter cascades make this execution problem explicit \citep{patel2025lotus,kim2026semanticfilter,dong2026compilation}.
+
+We study a third design point: \emph{compile once, execute cheaply}. Items are mapped once into a concept-independent low-bit code. Each semantic concept is learned offline as a tiny program over that code. Query understanding then selects and composes already-compiled predicates, leaving dense retrieval and downstream ranking unchanged.
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[node distance=8mm and 9mm, >=Latex, every node/.style={font=\small}]
+\tikzstyle{box}=[draw, rounded corners=2pt, minimum height=8mm, align=center, inner xsep=6pt]
+\tikzstyle{big}=[box, minimum width=34mm]
+\node[big] (teacher) {Offline semantic teacher\\VLM / human labels / classifier};
+\node[big, right=of teacher] (compile) {Predicate compiler\\sparse boosted LUTs};
+\node[big, right=of compile] (store) {Concept-program store\\$\{F_C\}$};
+\draw[->] (teacher) -- node[above]{labels} (compile);
+\draw[->] (compile) -- (store);
+
+\node[big, below=14mm of teacher] (item) {Item encoder\\dense embedding $x$};
+\node[big, right=of item] (codebox) {Fixed random rotation\\+ 4-bit quantization};
+\node[big, right=of codebox] (code) {Universal item code\\$q(x)$, 192 B/item};
+\draw[->] (item) -- (codebox);
+\draw[->] (codebox) -- (code);
+
+\node[big, below=14mm of codebox] (query) {Query understanding\\exact + latent predicates};
+\node[big, right=of query] (exec) {RSA execution\\AND / NOT composition};
+\node[big, right=of exec] (rank) {Pruned candidates\\downstream ranker};
+\draw[->] (query) -- (exec);
+\draw[->] (store.south) |- (exec.north);
+\draw[->] (code.south) |- (exec.north east);
+\draw[->] (exec) -- (rank);
+\end{tikzpicture}
+\caption{\rsa separates expensive semantic supervision from online execution. Exact catalog predicates remain conventional filters; latent predicates are compiled offline into sparse programs over a shared low-bit item code.}
+\label{fig:architecture}
+\end{figure*}
+
+Our contributions are fourfold. (1) We formulate a shared 4-bit random substrate for reusable semantic predicates. (2) We introduce a residual Newton-boosted compiler that learns sparse one-dimensional lookup functions with optional pair interactions. (3) We show that calibration is the key to composition: conjunction is well approximated by addition of log probabilities, with negation implemented by complement probability. (4) We evaluate the resulting executor on 44,072 products and 600 query--split cases under independent image supervision, comparing against dense retrieval, a full-precision semantic proxy, and an oracle upper bound. \rsa consistently improves the candidate-budget frontier, with larger gains on more compositional queries.
+
+We do \emph{not} claim that random codes replace ANN retrieval. Our working systems interpretation is narrower: \rsa is a semantic execution layer between broad retrieval and expensive ranking.
+
