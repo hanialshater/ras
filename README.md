@@ -66,6 +66,12 @@ python -m experiments.independent_teacher_search
 
 For the search pilot, a GPU is recommended because CLIP image embeddings are generated once offline. The RSA predicate compiler and online scoring are lightweight CPU operations in this prototype.
 
+## Run the experiment series in Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hanialshater/ras/blob/claude/repo-check-rrudyh/experiments/rsa_lab.ipynb)
+
+`experiments/rsa_lab.ipynb` runs the seven-stage plan in `experiments/COLAB_PLAN.md` on a T4: kill tests, probe ceilings, a 200-query composition benchmark, a LUT budget sweep, an optional VLM teacher check, a throughput comparison, and four improvement experiments. It caches embeddings to Drive and writes `results/summary.md`. The notebook is generated from `experiments/rsa_lab.py`; set `RSA_SYNTHETIC=1 RSA_FAST=1` to smoke-test it without downloads.
+
 ## Research status
 
 Exploratory research prototype. The next decisive experiment is a **50-200 compound-query benchmark** with independent semantic supervision, repeated seeds, aggregate quality-vs-candidate-budget curves, direct-conjunction ceilings, and measured packed CPU/SIMD latency.
