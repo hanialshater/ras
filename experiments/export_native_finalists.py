@@ -1,19 +1,13 @@
 """Export real learned finalist representations/programs for native CPU benchmarking.
 
-This script reuses the same data, strict split, MiniLM representation, CLIP teacher,
-and learned semantic heads as ``binary_bbq_predicates.py``.  It exports the first
-configured seed only, because the native benchmark measures execution cost rather
-than statistical quality.
+Besides the historical flat finalist files, this script now writes a portable
+Binary1-LS2-int4 semantic sidecar:
 
-Finalists:
-  * FP32 linear semantic heads;
-  * PQ64 codes + compiled linear LUT heads;
-  * BBQ-inspired centered 1-bit documents + LS2 corrections + int4 query weights;
-  * RSA2 random-orthogonal sparse LUT programs.
+    <out>/sidecar_index/
+    <out>/sidecar_programs/<concept>/
 
-The exported test population is real held-out Fashion data.  The Rust benchmark
-may tile those rows to a larger resident catalog to measure realistic memory
-working sets without inventing synthetic values or programs.
+The sidecar is directly consumable by ``ras.SemanticExecutor`` and the Rust
+``sidecar`` binary.  ANN retrieval and exact filtering remain external.
 """
 from __future__ import annotations
 
@@ -33,7 +27,10 @@ from experiments.large_scale_search import (
 )
 from experiments.reviewer_baselines import fit_linear_proxy
 from ras.binary import build_centered_binary_code, pack_document_bits
+from ras.calibration import fit_scalar_calibrator
 from ras.config import load_config
+from ras.semantic_index import BinarySemanticIndex
+from ras.semantic_program import ProgramStore, compile_linear_program
 from ras.splits import make_protocol_split
 from ras.teachers import LATENT_SPECS, labels_from_fit_threshold
 
@@ -157,6 +154,32 @@ def export(config_path: str, out_dir: str) -> Path:
     _write(root / "bbq_base.f32", base, np.float32)
     _write(root / "bbq_sum_w.f32", sum_w, np.float32)
 
+    # Portable BYO sidecar using the same first-split Binary1-LS2-int4 design.
+    sidecar_index = BinarySemanticIndex.build(
+        root / "sidecar_index",
+        xtest,
+        fit_embeddings=xfit,
+        seed=seed,
+        projection_kind="identity",
+        overwrite=True,
+    )
+    store = ProgramStore(root / "sidecar_programs")
+    packed_cal = pack_document_bits(bbq.Q_cal)
+    for c, spec in enumerate(LATENT_SPECS):
+        program = compile_linear_program(
+            sidecar_index,
+            name=spec["name"],
+            weight=np.asarray(coefs[c], dtype=np.float32),
+            intercept=float(intercepts[c]),
+            positive_rate=float(ycal[:, c].mean()),
+        )
+        cal_raw = program.raw_scores(packed_cal, bbq.correction_cal)
+        cal = fit_scalar_calibrator(cal_raw, ycal[:, c])
+        program.calibration_a = float(cal.a)
+        program.calibration_b = float(cal.b)
+        program.positive_rate = float(ycal[:, c].mean())
+        store.save(program)
+
     # RSA2 real 2-bit quantile codes + learned sparse programs.
     _, _, rsa2_programs, rsa2 = fit_rsa_random_bits(
         xfit, xcal, xtest, yfit, ycal, ytest, seed, cfg, bits=2
@@ -177,6 +200,11 @@ def export(config_path: str, out_dir: str) -> Path:
         "seed": seed,
         "bytes_per_item": {"fp32_linear": 1536, "pq64": 64, "bbq1_ls2_int4q": 56, "rsa2": 96},
         "program_bytes_per_concept": {"fp32_linear": 1548, "pq64": 65548, "bbq1_ls2_int4q": 216, "rsa2": 580},
+        "portable_sidecar": {
+            "index": "sidecar_index",
+            "programs": "sidecar_programs",
+            "note": "Candidate row IDs from any host ANN/filter layer can be scored without loading FP32 item embeddings.",
+        },
         "note": "Real held-out item representations and learned first-seed programs; Rust may tile rows only to enlarge the resident working set.",
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
