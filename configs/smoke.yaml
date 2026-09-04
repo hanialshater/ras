@@ -1,0 +1,35 @@
+experiment_name: rsa_smoke_independent_teacher
+
+data:
+  dataset: ashraq/fashion-product-images-small
+  n_products: 8000
+  data_seed: 7
+
+retrieval:
+  model: sentence-transformers/all-MiniLM-L6-v2
+  batch_size: 256
+
+teacher:
+  model: openai/clip-vit-base-patch32
+  batch_size: 128
+  positive_prevalence: 0.40
+
+rsa:
+  bits: 4
+  quantizer: quantile
+  k_coords: 24
+  pair_luts: 2
+  candidate_pool: 96
+
+benchmark:
+  seeds: [7]
+  ann_pool: 500
+  n_queries: 20
+  min_fit_truth: 30
+  max_positive_latents: 3
+  allow_negative: true
+  retention: [1.0, 0.4, 0.2, 0.1, 0.05]
+  bootstrap_samples: 300
+
+cache_dir: .cache/ras
+results_dir: results
