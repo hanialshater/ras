@@ -18,9 +18,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test Rust semantic engine
         run: cargo test --release --manifest-path rust/semantic_engine/Cargo.toml
-      - name: Representative 500k-catalog benchmark
-        run: cargo run --release --manifest-path rust/semantic_engine/Cargo.toml -- --throughput-items 500000 --capacity-items 5000000 --repeats 3 --out systems_results.csv
+      - name: Representative 500k-catalog fair benchmark
+        run: cargo run --release --manifest-path rust/semantic_engine/Cargo.toml --bin fair -- --throughput-items 500000 --capacity-items 5000000 --repeats 3 --out systems_results_fair.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: rsa-systems-results
-          path: systems_results.csv
+          name: rsa-systems-results-fair
+          path: systems_results_fair.csv
