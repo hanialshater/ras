@@ -1,9 +1,10 @@
+
 \subsection{Calibration changes the composition regime}
-Raw addition of independently trained logits performs poorly, especially for three-way conjunctions. After scalar calibration, several soft AND rules converge to similar quality. We prefer the log-probability product because it is algebraically clean and needs no conjunction-specific model.
+Raw addition of independently trained logits performs poorly, especially for three-way conjunctions. After scalar calibration, several soft AND rules converge to similar quality. We use the log-probability product because it is simple, compositional, and needs no conjunction-specific model.
 
 \begin{table}[t]
 \centering
-\caption{Composition of independently learned predicates.}
+\caption{Composition of independently learned predicates in the mechanism study.}
 \label{tab:composition}
 \small
 \begin{tabular}{lcc}
@@ -41,33 +42,34 @@ Correlation weighted & 0.8142 & \textbf{0.7470}\\
 \label{fig:composition}
 \end{figure}
 
-The earlier geometric formulation obtained 0.639 F1 for two-way soft AND and 0.476 for three-way literal boxes. The calibrated program algebra reaches about 0.814 and 0.746--0.747, indicating that independently learned predicates remain useful together when statistical evidence is not treated as hard geometry.
+The earlier geometric formulation obtained 0.639 F1 for two-way soft AND and 0.476 for three-way literal boxes. The calibrated program algebra reaches about 0.814 and 0.746--0.747. We therefore retain calibration and the simple product rule in all later supervised methods; the novelty claim is the compiled execution representation, not the probability product itself.
 
-\subsection{Cross-modal latent predicate compilation}
-The main benchmark is deliberately cross-modal: CLIP sees images, whereas both \rsa and the full-precision proxy see only MiniLM title embeddings. Averaged over three strict splits, \rsa reaches 0.707 mean F1 and 0.758 mean AP, compared with 0.745 F1 and 0.805 AP for the full-precision linear proxy. Table~\ref{tab:latent} shows that the sparse low-bit executor tracks the full-precision model consistently across concepts rather than relying on one easy predicate.
+\subsection{Cross-modal predicate quality}
+The main benchmark is deliberately cross-modal: CLIP sees images, whereas every search-side method sees only MiniLM title embeddings. Table~\ref{tab:predicate_finalists} reports predicate quality and storage. The FP32 linear head reaches 0.745 mean F1. PQ64 preserves most of this at 0.737. Binary1-LS2 with int4 predicate weights reaches 0.721, ahead of the sparse low-bit variants while using the smallest program among the high-performing supervised methods.
 
-\begin{table}[t]
+\begin{table*}[t]
 \centering
-\caption{Cross-modal predicate F1, averaged over three strict splits. The teacher uses CLIP images; both predictors use MiniLM titles.}
-\label{tab:latent}
+\caption{Cross-modal predicate quality averaged over three strict splits, with packed storage accounting. Program bytes are approximate serialized state per concept.}
+\label{tab:predicate_finalists}
 \small
-\begin{tabular}{lcc}
+\begin{tabular}{lrrrr}
 \toprule
-Concept & RSA & FP32 proxy\\
+Method & Item B & Program B/concept & Mean F1 & Mean AP\\
 \midrule
-Quiet luxury & 0.767 & 0.799\\
-Elegant & 0.755 & 0.781\\
-Minimalist & 0.730 & 0.760\\
-Technical/sporty & 0.710 & 0.756\\
-Office appropriate & 0.692 & 0.743\\
-Relaxed & 0.689 & 0.731\\
-Chunky & 0.667 & 0.699\\
-Retro & 0.649 & 0.690\\
-\midrule
-Mean & \textbf{0.707} & 0.745\\
+FP32 linear & 1536 & 1548 & \textbf{.745} & \textbf{.805}\\
+PQ64 compiled linear & 64 & 65548 & .737 & .794\\
+Binary1-LS2, FP32 weights & 56 & 1556 & .721 & .771\\
+Binary1-LS2, int4 weights & \textbf{56} & \textbf{216} & .721 & .770\\
+RSA4 sparse LUT & 192 & 3652 & .707 & .758\\
+RSA2 sparse LUT & 96 & 580 & .702 & .747\\
+RSA1 centered random & 48 & 292 & .688 & .723\\
+RSA1 centered identity & 48 & 292 & .687 & .724\\
+Zero-shot prompt difference & 1536 & 1536 & .604 & .565\\
+Zero-shot concept name & 1536 & 1536 & .575 & .469\\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{table*}
 
-The remaining error is not primarily a quantization effect: the full-precision text-side proxy is also imperfect against image-defined semantics. This distinction matters for interpreting downstream results because the oracle exposes information that is not always present in product titles.
+Two ablations are especially informative. First, int4 predicate quantization is nearly free: Binary1-LS2 changes from 0.72106 to 0.72053 mean F1 and from 0.77092 to 0.76973 AP when the semantic weight vector is quantized from FP32 to int4. Second, random rotation is not doing much at one bit: centered identity and centered random sparse programs obtain 0.6866 and 0.6875 mean F1 respectively. The final benchmark therefore does not support random rotation as the source of the strongest compact result.
 
+The gap to the image teacher is not purely a quantization effect. Even the uncompressed FP32 MiniLM-side linear proxy is imperfect against image-defined semantics, so the oracle includes information that may simply be absent from product titles.
