@@ -2,7 +2,26 @@
 from __future__ import annotations
 from typing import Dict, Iterable
 import numpy as np
-from .core import best_f1_threshold, metric_row
+from sklearn.metrics import average_precision_score, f1_score
+
+
+def best_f1_threshold(scores: np.ndarray, truth: np.ndarray, n_grid: int = 160) -> float:
+    scores = np.asarray(scores)
+    truth = np.asarray(truth, dtype=bool)
+    if len(scores) == 0:
+        return 0.0
+    thresholds = np.unique(scores) if np.unique(scores).size <= n_grid else np.unique(np.quantile(scores, np.linspace(0.005, 0.995, n_grid)))
+    vals = [f1_score(truth, scores >= t, zero_division=0) for t in thresholds]
+    return float(thresholds[int(np.argmax(vals))])
+
+
+def metric_row(truth: np.ndarray, scores: np.ndarray, threshold: float) -> Dict[str, float]:
+    truth = np.asarray(truth, dtype=bool)
+    pred = np.asarray(scores) >= threshold
+    return {
+        "f1": float(f1_score(truth, pred, zero_division=0)),
+        "ap": float(average_precision_score(truth, scores)) if truth.any() else float("nan"),
+    }
 
 
 def bootstrap_mean_ci(values: Iterable[float], seed: int = 7, n_boot: int = 2000, alpha: float = 0.05) -> Dict[str, float]:
