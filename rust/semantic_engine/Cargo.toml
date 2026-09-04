@@ -10,3 +10,4 @@ codegen-units = 1
 panic = "abort"
 
 [dependencies]
+hnsw_rs = "0.3.4"
