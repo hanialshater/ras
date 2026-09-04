@@ -1,4 +1,4 @@
-use hnsw_rs::prelude::{DistDot, Hnsw};
+use hnsw_rs::prelude::{DistCosine, Hnsw};
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::env;
@@ -221,7 +221,7 @@ struct Graph {
     entry: usize,
 }
 
-fn extract_graph(hnsw: &Hnsw<'_, f32, DistDot>, n: usize) -> Graph {
+fn extract_graph(hnsw: &Hnsw<'_, f32, DistCosine>, n: usize) -> Graph {
     let max_level = hnsw.get_max_level_observed() as usize;
     let mut neigh = (0..n).map(|_| (0..=max_level).map(|_| Vec::<usize>::new()).collect()).collect::<Vec<Vec<Vec<usize>>>>();
     let mut level = vec![0usize; n];
@@ -390,7 +390,7 @@ fn main() {
 
     let t0 = Instant::now();
     let max_layer = 16usize.min(((n.max(2) as f64).ln().ceil() as usize).max(2));
-    let mut hnsw = Hnsw::<f32, DistDot>::new(a.m, n, max_layer, a.ef_construction, DistDot {});
+    let mut hnsw = Hnsw::<f32, DistCosine>::new(a.m, n, max_layer, a.ef_construction, DistCosine {});
     for id in 0..n {
         hnsw.insert_slice((&items[id * D..(id + 1) * D], id));
     }
