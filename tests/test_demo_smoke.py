@@ -1,7 +1,7 @@
 """Cheap smoke checks for the public Gradio demo.
 
-These tests deliberately avoid model/dataset downloads.  They exercise the query
-parser and instantiate the UI with a tiny synthetic state, which catches broken
+These tests deliberately avoid model/dataset downloads. They exercise the query
+parser and instantiate the UI with a synthetic state, which catches broken
 imports and Gradio API drift in normal CI.
 """
 from __future__ import annotations
@@ -13,14 +13,16 @@ from demos.fashion_app import DemoState, build_app, parse_exact_filters, parse_l
 
 
 def _tiny_state() -> DemoState:
+    # Keep >=100 rows because the real UI's ANN-pool slider starts at 100.
+    n = 200
     df = pd.DataFrame(
         {
-            "baseColour": ["Black", "Blue"],
-            "gender": ["Women", "Men"],
-            "masterCategory": ["Footwear", "Apparel"],
-            "subCategory": ["Shoes", "Topwear"],
-            "articleType": ["Casual Shoes", "Tshirts"],
-            "productDisplayName": ["Black casual shoe", "Blue tee"],
+            "baseColour": (["Black", "Blue"] * (n // 2)),
+            "gender": (["Women", "Men"] * (n // 2)),
+            "masterCategory": (["Footwear", "Apparel"] * (n // 2)),
+            "subCategory": (["Shoes", "Topwear"] * (n // 2)),
+            "articleType": (["Casual Shoes", "Tshirts"] * (n // 2)),
+            "productDisplayName": (["Black casual shoe", "Blue tee"] * (n // 2)),
         }
     )
     return DemoState(
