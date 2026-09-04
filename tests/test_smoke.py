@@ -1,8 +1,10 @@
 import numpy as np
+import pandas as pd
 from ras.substrate import build_substrate
 from ras.predicates import fit_boosted_lut, score_boosted
 from ras.calibration import fit_scalar_calibrator
 from ras.composition import compose_logprob
+from ras.queries import generate_query_benchmark
 
 
 def _toy(seed=7):
@@ -29,3 +31,20 @@ def test_logprob_composition_prefers_joint_high_scores():
     L = np.array([[4.0, 4.0], [4.0, -4.0], [-4.0, 4.0], [-4.0, -4.0]])
     assert np.argmax(compose_logprob(L, [1, 1])) == 0
     assert np.argmax(compose_logprob(L, [1, -1])) == 1
+
+
+def test_query_benchmark_is_deterministic_and_fit_only():
+    n = 1000
+    df = pd.DataFrame({
+        "baseColour": ["Black"] * 600 + ["Blue"] * 400,
+        "subCategory": ["Shoes"] * 700 + ["Topwear"] * 300,
+        "articleType": ["Shirts"] * 500 + ["Tshirts"] * 500,
+        "gender": ["Men"] * 500 + ["Women"] * 500,
+        "masterCategory": ["Apparel"] * 500 + ["Footwear"] * 500,
+    })
+    rng = np.random.default_rng(7)
+    y = rng.random((n, 8)) < 0.5
+    q1 = generate_query_benchmark(df, y, n_queries=10, seed=77, min_fit_truth=20, max_positive_latents=2)
+    q2 = generate_query_benchmark(df, y, n_queries=10, seed=77, min_fit_truth=20, max_positive_latents=2)
+    assert [q.to_dict() for q in q1] == [q.to_dict() for q in q2]
+    assert all(q.fit_truth >= 20 for q in q1)
