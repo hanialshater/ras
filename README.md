@@ -4,11 +4,17 @@ Random Semantic Algebra studies whether expensive semantic supervision can be
 **compiled offline into tiny reusable search-time programs over a shared low-bit
 item representation**.
 
-The current strongest compact design is **Binary1-LS2-int4**: centered 1-bit
-items, two per-item reconstruction scalars, int4 semantic predicate weights,
-and calibrated composition.
+The strongest compact design in the current experiments is
+**Binary1-LS2-int4**:
 
-## Current paper result
+- 56 B/item: 384 centered sign bits + two per-item reconstruction scalars.
+- ~216 B/semantic predicate: int4 weights packed into four bit planes plus scalar metadata.
+- Learned predicates can be added independently without re-encoding the catalog.
+- The same program can run after retrieval or directly inside ANN traversal.
+
+## Headline results
+
+### Semantic quality
 
 Main benchmark: 44,072 fashion products, MiniLM title embeddings, independent
 CLIP image semantics, three strict fit/calibration/test splits, and 200 compound
@@ -25,26 +31,96 @@ At 20% candidate retention:
 | PQ64 compiled linear | 64 | 65,548 | .352 | .594 |
 | FP32 linear | 1536 | 1548 | .363 | .606 |
 
-Binary1-LS2-int4 recovers about 83% of the incremental FP32 semantic gain over
-dense retrieval while using a ~303x smaller predicate scoring payload than the
-PQ64 compiled-linear baseline.
+Binary1-LS2-int4 recovers about **83% of the incremental FP32 semantic gain**
+over dense retrieval while using a ~303x smaller predicate payload than the
+compiled-PQ64 baseline.
 
-The Rust microkernel benchmark on real learned rows/programs shows, for a 5k
-candidate pool, about **0.48 ms for one Binary1 predicate and 1.99 ms for eight**
-in the recorded run.  These are semantic-kernel measurements, not end-to-end
-search latency; the CPU model was unfortunately not recorded for that historical
-artifact.
+### Live soft predicates inside HNSW
 
-## Bring your own data
+The latest systems benchmark executes the real Binary1-LS2-int4 predicates
+**inside timed HNSW traversal**. Dense similarity still navigates the graph;
+semantic programs only decide whether a visited node may enter the valid result
+beam. Invalid nodes remain traversable.
 
-RSA is designed as a semantic **sidecar**, not a replacement ANN engine.
-Use any embedding model and keep your existing retrieval/filter stack.
+The fair benchmark uses the same normalized-dot geometry and same graph for our
+custom traversal and the `hnsw_rs` filtered baseline, 100 queries, K=50, EF=128,
+and three active predicates:
+
+| Eligible catalog fraction | Live semantic HNSW | Filtered HNSW | Live Recall@50 | Filtered Recall@50 |
+|---:|---:|---:|---:|---:|
+| 50% | 2.13 ms | 5.00 ms | .9816 | .9808 |
+| 20% | 4.90 ms | 10.44 ms | .9774 | .9738 |
+| 10% | 7.09 ms | 14.37 ms | .9730 | .9718 |
+| 5% | 10.18 ms | 20.19 ms | .9786 | .9758 |
+| 2% | 13.71 ms | 26.39 ms | .9828 | .9798 |
+
+Across the sweep, live execution exactly matches the corresponding materialized
+custom traversal. The incremental compiled-program cost is roughly
+**108–114 ns per predicate invocation** in this run.
+
+These are single-thread prototype measurements, not production p99 claims. The
+important result is that the soft predicate is cheap enough to participate in
+ANN traversal and avoids the severe recall loss of post-filtering at low
+selectivity.
+
+### Joint memory
+
+For a catalog with `N` items and `C` learned concepts, the relevant payload is:
+
+```text
+N * item_bytes + C * program_bytes
+```
+
+Illustrative 5M-item / 100k-concept payload:
+
+| Method | Item payload | Program payload | Total |
+|---|---:|---:|---:|
+| **Binary1-LS2-int4** | 280 MB | 21.6 MB | **301.6 MB** |
+| RSA2 sparse LUT | 480 MB | 58 MB | 538 MB |
+| PQ64 compiled linear | 320 MB | 6,554.8 MB | 6,874.8 MB |
+| FP32 linear | 7,680 MB | 154.8 MB | 7,834.8 MB |
+
+This is representation payload only; it excludes HNSW graph edges, containers,
+allocator overhead, and offline model weights.
+
+## Architecture
+
+A natural-language or LLM planner can emit a structured search plan:
+
+```text
+Dense query:  "flowy midi skirt"
+Exact:        category=skirts, gender=women
+Soft:         +fluid +refined -sporty
+```
+
+Then:
+
+```text
+query embedding
+      ↓
+dense HNSW navigation
+      ↓
+visited node
+      ↓
+compiled soft predicate
+   ┌───────┴────────┐
+ valid            invalid
+   ↓                 ↓
+result beam      still traversable
+      ↓
+downstream personalized / neural ranker
+```
+
+The final HNSW design deliberately does **not** steer graph geometry with the
+semantic score. Dense similarity owns navigation; semantics own eligibility.
+
+## Bring your own embeddings
 
 ```python
 import numpy as np
 from ras import BinarySemanticIndex
 
-X = np.load("item_embeddings.npy")   # [N, D], your encoder
+X = np.load("item_embeddings.npy")
 index = BinarySemanticIndex.build(
     "semantic_index",
     X,
@@ -52,10 +128,9 @@ index = BinarySemanticIndex.build(
 )
 ```
 
-For D=384 the sidecar writes a 56-byte/item serving representation: 48 packed
-sign-bit bytes + two f32 correction values.
+For D=384, this writes a 56-byte/item serving representation.
 
-## Compile your own semantic predicates
+## Compile semantic predicates
 
 Labels may come from humans, a VLM/LLM teacher, a specialist model, or another
 supervision source.
@@ -68,16 +143,12 @@ program = fit_binary_predicate(index, X, y, name="office_appropriate")
 ProgramStore("semantic_programs").save(program)
 ```
 
-Adding a new predicate writes only a new tiny program; it does **not** re-encode
-the catalog.
+Adding a predicate writes only the tiny program; the item index is unchanged.
+Existing linear heads can also be compiled with `compile_linear_program(...)`.
 
-An existing linear head can also be compiled directly with
-`compile_linear_program(...)`.
+## Candidate-side API
 
-## Inference: candidate IDs in, semantic top-k out
-
-Your host search engine performs ANN/lexical retrieval and exact filters, then
-passes integer row IDs to the semantic sidecar:
+If you want to keep ANN completely external:
 
 ```python
 from ras import SemanticExecutor
@@ -91,71 +162,57 @@ result = executor.topk(
 )
 ```
 
-The intended production path is:
+## Live HNSW experiment
+
+The native executable is:
 
 ```text
-ANN / lexical retrieval
-        -> exact filters
-        -> binary semantic sidecar
-        -> semantic top-k
-        -> expensive neural ranker
+rust/semantic_engine/src/bin/semantic_hnsw_live.rs
 ```
 
-See [`docs/SYSTEMS.md`](docs/SYSTEMS.md) for the index format, lifecycle,
-update/versioning model, latency decomposition, early-exit rule, and remaining
-systems work.
-
-## Native Rust sidecar
-
-The portable Python index/program files are directly consumable by the Rust
-executor:
+The reproducible non-notebook harness is:
 
 ```bash
-cd rust/semantic_engine
-cargo build --release --bin sidecar
-
-./target/release/sidecar \
-  --index ../../semantic_index \
-  --programs ../../semantic_programs \
-  --positive minimalist,office_appropriate \
-  --negative technical_sporty \
-  --candidate-count 5000 \
-  --topk 1000
-```
-
-The native executor fuses calibrated composition with top-k maintenance and uses
-a safe early-termination rule: every additional log-probability term is <= 0, so
-once a partial score falls below the current top-k threshold the item cannot
-recover.
-
-## Systems benchmark
-
-Export the first real held-out split into the portable sidecar format:
-
-```bash
-python -m experiments.export_native_finalists \
+python -m experiments.semantic_hnsw_live_sweep \
   --config configs/binary_bbq.yaml \
-  --out-dir results/native_finalists_first_seed
+  --output-dir results/semantic_hnsw_live_fair
 ```
 
-Then measure the semantic stage, including composition + top-k + early exit:
+It:
+
+1. exports the strict held-out real item codes and programs;
+2. verifies unit-normalized retrieval embeddings;
+3. derives semantic thresholds for 50%, 20%, 10%, 5%, and 2% selectivity;
+4. builds the Rust live-HNSW executable;
+5. runs post-filter, filtered-HNSW, free-materialized custom traversal, and live compiled predicates;
+6. writes `raw.csv`, `summary.csv`, `fairness.csv`, `gates.csv`, and `environment.json`.
+
+The paper's checked-in result table is
+[`paper/icml/data/semantic_hnsw_live_fair_full.csv`](paper/icml/data/semantic_hnsw_live_fair_full.csv).
+
+## Interactive fashion demo
+
+The demo shows held-out fashion images, parses exact vs soft intent, compares
+Binary1-LS2-int4 with PQ64 and other baselines, and displays the paper's memory
+and live-HNSW systems results separately from Python UI latency.
 
 ```bash
-python -m experiments.sidecar_systems \
-  --index results/native_finalists_first_seed/sidecar_index \
-  --programs results/native_finalists_first_seed/sidecar_programs \
-  --resident-items 500000
+pip install -e ".[demo,benchmark]"
 ```
 
-The harness records CPU model, Rust version, median/p95 latency, resident-set
-size, candidate count, predicate count, and the fraction of predicate
-invocations actually executed.  It intentionally excludes ANN traversal, exact
-filters, RPC, and downstream ranking.
+Colab:
+
+[`notebooks/rsa_fashion_search_demo_colab.ipynb`](notebooks/rsa_fashion_search_demo_colab.ipynb)
+
+Core demo code:
+
+[`demos/fashion_app.py`](demos/fashion_app.py)
 
 ## Research code
 
 ```text
 src/ras/
+  accounting.py         # centralized item/program memory accounting
   binary.py             # centered binary encoder + int4 primitives
   semantic_index.py     # portable BYO item index
   semantic_program.py   # predicate compiler + program store
@@ -171,50 +228,63 @@ src/ras/
 rust/semantic_engine/src/bin/
   actual.rs              # real-code finalist microkernel benchmark
   fair.rs                # synthetic fairness benchmark
-  sidecar.rs             # portable composition + top-k executor
+  sidecar.rs             # portable candidate-side executor
+  semantic_hnsw.rs       # traversal prototypes / ablations
+  semantic_hnsw_live.rs  # live compiled predicates inside HNSW
 ```
-
-Useful entry points:
-
-- `examples/byo_semantic_sidecar.py` — minimal bring-your-own-data integration.
-- `experiments/binary_bbq_predicates.py` — quality benchmark.
-- `experiments/export_native_finalists.py` — real native/portable export.
-- `experiments/sidecar_systems.py` — stage-level latency benchmark.
-- `notebooks/rsa_fashion_search_demo_colab.ipynb` — interactive fashion image demo.
 
 ## Reproduction
 
+Recommended environment:
+
 ```bash
-pip install -e .
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e ".[dev,benchmark,demo]"
+```
+
+Then:
+
+```bash
+# Unit tests
 pytest -q
 
-# Paper-scale quality benchmark
+# Paper-scale semantic quality benchmark
 python -m experiments.binary_bbq_predicates --config configs/binary_bbq.yaml
 
-# Export real native assets and portable sidecar
-python -m experiments.export_native_finalists --config configs/binary_bbq.yaml
+# Fair live semantic-HNSW systems benchmark
+python -m experiments.semantic_hnsw_live_sweep \
+  --config configs/binary_bbq.yaml \
+  --output-dir results/semantic_hnsw_live_fair
 
 # Rust tests
 cargo test --release --manifest-path rust/semantic_engine/Cargo.toml
 
-# ICML-style paper
+# ICML-style manuscript
 cd paper/icml
-pdflatex main.tex
-pdflatex main.tex
+pdflatex -interaction=nonstopmode main.tex
+pdflatex -interaction=nonstopmode main.tex
 ```
+
+See [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) for the exact artifact
+contract and what each benchmark does and does not measure.
 
 ## Paper
 
-The conference-style manuscript is under [`paper/icml`](paper/icml).  The latest
-version includes the Binary1/PQ/RSA2/RSA4 comparison, real native throughput,
-explicit microkernel latency, a bring-your-own systems interface, joint item +
-predicate memory accounting, and a clear separation between kernel latency and
-end-to-end search latency.
+The manuscript is under [`paper/icml`](paper/icml). The current story is no
+longer "random 4-bit codes are best." The stronger supported thesis is:
+
+> **Soft semantic predicates can be compiled into tiny reusable programs over a
+> shared low-bit item substrate and executed cheaply enough to participate
+> directly in ANN traversal.**
+
+PQ64 remains the stronger compressed-quality baseline. Binary1-LS2-int4 is the
+stronger tiny-program / large-vocabulary point.
 
 ## Research status
 
-The strongest supported thesis is now **compiled semantic predicate execution**,
-not randomness or four-bit LUTs by themselves.  The next evidence step is a
-fully instrumented search-stage benchmark with p50/p95/p99 latency and CPU
-metadata, followed by a real ANN/filter integration and a large semantic
-vocabulary cache experiment.
+Current evidence is controlled and single-domain. The next work is external
+validity rather than more graph variants: natural LLM-generated plans, a second
+dataset/domain, larger semantic vocabularies, and production-grade ANN/service
+integration with concurrency and p99 measurements.
