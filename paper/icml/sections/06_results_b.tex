@@ -1,0 +1,73 @@
+\subsection{Calibration changes the composition regime}
+Raw addition of independently trained logits performs poorly, especially for three-way conjunctions. After scalar calibration, several soft AND rules converge to similar quality. We prefer the log-probability product because it is algebraically clean and needs no conjunction-specific model.
+
+\begin{table}[t]
+\centering
+\caption{Composition of independently learned predicates.}
+\label{tab:composition}
+\small
+\begin{tabular}{lcc}
+\toprule
+Rule & 2-way F1 & 3-way F1\\
+\midrule
+Raw logit add & 0.7148 & 0.5633\\
+Min calibrated logit & 0.8140 & 0.7428\\
+Log-probability product & \textbf{0.8142} & 0.7459\\
+Soft-min ($\tau=1$) & 0.8141 & 0.7451\\
+Correlation weighted & 0.8142 & \textbf{0.7470}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\columnwidth,height=4.1cm,
+  ybar, ymin=0.5,ymax=0.84,
+  ylabel={F1},
+  symbolic x coords={Raw,Min,LogP,Soft,Corr}, xtick=data,
+  xticklabels={Raw add,Min logit,Log-prob,Soft-min,Corr.},
+  x tick label style={rotate=35,anchor=east,font=\scriptsize},
+  legend style={font=\scriptsize,draw=none,at={(0.5,1.02)},anchor=south,legend columns=2},
+  ymajorgrids=true, grid style={dotted}, bar width=4pt,
+]
+\addplot coordinates {(Raw,0.7148) (Min,0.8140) (LogP,0.8142) (Soft,0.8141) (Corr,0.8142)};
+\addplot coordinates {(Raw,0.5633) (Min,0.7428) (LogP,0.7459) (Soft,0.7451) (Corr,0.7470)};
+\legend{2-way,3-way}
+\end{axis}
+\end{tikzpicture}
+\caption{Calibration, rather than a complex combination rule, drives the improvement in semantic conjunction.}
+\label{fig:composition}
+\end{figure}
+
+The earlier geometric formulation obtained 0.639 F1 for two-way soft AND and 0.476 for three-way literal boxes. The calibrated program algebra reaches about 0.814 and 0.746--0.747, indicating that independently learned predicates remain useful together when statistical evidence is not treated as hard geometry.
+
+\subsection{Cross-modal latent predicate compilation}
+The main benchmark is deliberately cross-modal: CLIP sees images, whereas both \rsa and the full-precision proxy see only MiniLM title embeddings. Averaged over three strict splits, \rsa reaches 0.707 mean F1 and 0.758 mean AP, compared with 0.745 F1 and 0.805 AP for the full-precision linear proxy. Table~\ref{tab:latent} shows that the sparse low-bit executor tracks the full-precision model consistently across concepts rather than relying on one easy predicate.
+
+\begin{table}[t]
+\centering
+\caption{Cross-modal predicate F1, averaged over three strict splits. The teacher uses CLIP images; both predictors use MiniLM titles.}
+\label{tab:latent}
+\small
+\begin{tabular}{lcc}
+\toprule
+Concept & RSA & FP32 proxy\\
+\midrule
+Quiet luxury & 0.767 & 0.799\\
+Elegant & 0.755 & 0.781\\
+Minimalist & 0.730 & 0.760\\
+Technical/sporty & 0.710 & 0.756\\
+Office appropriate & 0.692 & 0.743\\
+Relaxed & 0.689 & 0.731\\
+Chunky & 0.667 & 0.699\\
+Retro & 0.649 & 0.690\\
+\midrule
+Mean & \textbf{0.707} & 0.745\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The remaining error is not primarily a quantization effect: the full-precision text-side proxy is also imperfect against image-defined semantics. This distinction matters for interpreting downstream results because the oracle exposes information that is not always present in product titles.
+
