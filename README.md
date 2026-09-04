@@ -23,24 +23,71 @@ Independent-teacher search pilot:
 
 At a 40% retained candidate budget, RSA increased teacher-relevant recall from **0.420 -> 0.652** while purity rose from **0.492 -> 0.763**. At a 20% budget, recall improved **0.246 -> 0.333** and purity **0.586 -> 0.793**.
 
-These are pilot results on one dataset and one detailed compound-query sweep, not yet production or multi-query evidence.
+These remain pilot results; the new large-scale harness below is intended to replace the single-query evidence with a multi-query, multi-seed benchmark.
 
-## Repository layout
+## Research code structure
 
-- `src/random_semantic_algebra_full.py` - exact runnable snapshot of the original reproducible experiment.
-- `src/rsa_v2.py` - exact runnable snapshot of the extended RSA v2 implementation: boosted LUTs, pair interactions, calibration, composition, whitening/random-dictionary ablations, teacher compilation and distillation.
-- `experiments/independent_teacher_search.py` - readable MiniLM-retrieval / CLIP-image-teacher search experiment with retention sweeps.
-- `paper/Random_Semantic_Algebra.md` - long-form paper source.
-- `paper/icml/main.tex` - professional two-column ICML-style LaTeX manuscript with equations, pseudocode algorithms, TikZ/PGFPlots figures, tables, impact statement, references, and appendix.
-- `paper/icml/rsa_icml_like.sty` - self-contained ICML-like preprint style.
-- `paper/icml/README.md` - paper build instructions and submission-template note.
-- `requirements.txt` - Python dependencies.
+The exact historical implementation remains in `src/rsa_v2.py` so existing numbers are reproducible. New work should use the modular API under `src/ras/`:
 
-The two exact implementation snapshots are stored as self-extracting gzip payloads so the exact research-session code is preserved byte-for-byte while remaining executable through the repository connector.
+```text
+src/ras/
+  substrate.py      # random rotation, quantization, geometry
+  predicates.py     # boosted LUTs, LLR factors, pair interactions
+  calibration.py    # scalar calibration
+  composition.py    # calibrated AND / NOT algebra
+  teachers.py       # independent CLIP semantic supervision
+  retrieval.py      # MiniLM retrieval embeddings
+  queries.py        # fit-only compound-query benchmark generation
+  metrics.py        # ranking metrics + bootstrap confidence intervals
+  cache.py          # reusable embedding cache
+  repro.py          # environment + git manifests
+  config.py         # YAML experiment configuration
+```
+
+Paper experiments live separately from the library:
+
+- `experiments/independent_teacher_search.py` - original readable search pilot.
+- `experiments/large_scale_search.py` - paper-grade multi-query / multi-seed benchmark.
+- `configs/large_scale.yaml` - default large-scale experiment configuration.
+- `tests/test_smoke.py` - synthetic regression/smoke tests.
+- `scripts/reproduce_paper.sh` - mechanism + large-scale reproduction entry point.
+
+## Large-scale paper benchmark
+
+The default large-scale config uses:
+
+- **all ~44k products** in Fashion Product Images Small;
+- **3 strict seeds** (`7, 17, 27`);
+- **200 compound queries per seed** generated using fit data only;
+- MiniLM title embeddings for retrieval;
+- CLIP image semantics as an independent latent teacher;
+- RSA vs dense-only vs a full-precision linear semantic proxy vs an oracle upper bound;
+- retention budgets from 100% down to 5%;
+- bootstrap confidence intervals and paired deltas versus dense retrieval.
+
+Expensive MiniLM/CLIP embeddings are cached and reused across seeds.
+
+```bash
+pip install -e .
+python -m experiments.large_scale_search --config configs/large_scale.yaml
+```
+
+Each run writes an immutable result directory containing:
+
+```text
+results/<run_id>/
+  config.yaml
+  environment.json
+  headline.json
+  predicate_metrics.csv
+  queries.csv
+  per_query.csv
+  summary.csv
+  paired_deltas.csv
+  figures/
+```
 
 ## Core idea
-
-Offline, an expensive teacher (VLM, human labels, or another semantic model) defines reusable concepts such as `minimalist`, `office appropriate`, or `technical/sporty`. Each concept is compiled into a small sparse program over the universal 4-bit item code. At query time, exact catalog filters remain ordinary filters, while latent predicates are combined using calibrated log-probability composition and evaluated with a small number of LUT reads and additions.
 
 ```text
 expensive semantic supervision
@@ -58,13 +105,20 @@ ANN candidates -> semantic program -> cheap pruning -> expensive ranker
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
+pytest -q
 
 # Original mechanism experiment
 python src/random_semantic_algebra_full.py
 
-# Independent-teacher search pilot
+# Original independent-teacher pilot
 python -m experiments.independent_teacher_search
+
+# New multi-query / multi-seed benchmark
+python -m experiments.large_scale_search --config configs/large_scale.yaml
+
+# Full experiment suite
+./scripts/reproduce_paper.sh
 
 # ICML-style paper
 cd paper/icml
@@ -72,8 +126,14 @@ pdflatex main.tex
 pdflatex main.tex
 ```
 
-For the search pilot, a GPU is recommended because CLIP image embeddings are generated once offline. The RSA predicate compiler and online scoring are lightweight CPU operations in this prototype.
+A GPU is recommended for CLIP image embedding. RSA predicate compilation and online LUT scoring are lightweight compared with the teacher stage.
+
+## Paper
+
+- `paper/Random_Semantic_Algebra.md` - long-form source.
+- `paper/icml/main.tex` - professional two-column ICML-style manuscript with equations, pseudocode algorithms, TikZ/PGFPlots figures, tables, impact statement, references, and appendix.
+- `paper/icml/README.md` - build instructions.
 
 ## Research status
 
-Exploratory research prototype. The next decisive experiment is a **50-200 compound-query benchmark** with independent semantic supervision, repeated seeds, aggregate quality-vs-candidate-budget curves, direct-conjunction ceilings, and measured packed CPU/SIMD latency.
+The codebase now supports the next evidence step: a **large multi-query, multi-seed independent-teacher benchmark** with strong proxy/oracle baselines and confidence intervals. Still missing for a mature submission are a second dataset/domain, direct composition ceilings at larger scale, and measured packed CPU/SIMD latency.
