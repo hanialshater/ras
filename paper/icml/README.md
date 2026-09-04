@@ -1,16 +1,19 @@
 # ICML-style LaTeX manuscript
 
-This directory contains the conference-style LaTeX version of **Random Semantic Algebra: Compiling Latent Search Predicates into Low-Bit Programs**.
+This directory contains the conference-style LaTeX version of **Random Semantic Algebra: Compiling Latent Search Predicates over Low-Bit Substrates**.
 
-It includes:
+The current manuscript reflects the full 44,072-product / 600-query independent-teacher benchmark and the real native Rust execution benchmark. It covers:
 
-- two-column ICML-like US Letter layout;
-- full mathematical formulation;
-- Algorithm 1: residual Newton-boosted predicate compilation;
-- Algorithm 2: query-time exact-filter + semantic-program execution;
-- TikZ architecture and predicate diagrams;
-- PGFPlots result figures generated directly from the reported experiment values;
-- publication tables, related work, limitations, impact statement, references, and appendix.
+- the original random 1/2/4-bit sparse boosted-LUT compiler;
+- the centered **Binary1-LS2-int4** compiler (56 B/item, ~216 B/predicate);
+- the strong **PQ64 compiled-linear** baseline (64 B/item, ~65.5 KB/predicate);
+- FP32 and zero-shot baselines, calibrated AND/NOT composition, and strict fit/calibration/test evaluation;
+- quality--item-memory--program-memory Pareto results;
+- native single-threaded execution on the actual held-out codes and learned programs;
+- the prevalence-confound correction for the earlier composition-depth observation;
+- related work, limitations, impact statement, and reproducibility details.
+
+The framing is intentionally conservative: random rotation and 4-bit quantization are no longer presented as uniquely optimal, the calibrated probability product is not claimed as a new mathematical operator, and the BBQ-inspired binary compiler is explicitly distinguished from exact Lucene/Elasticsearch BBQ.
 
 ## Build
 
@@ -20,6 +23,4 @@ pdflatex main.tex
 pdflatex main.tex
 ```
 
-The local `rsa_icml_like.sty` is self-contained and closely follows ICML's two-column geometry for a reproducible preprint. For an actual ICML submission, use the official conference `icml2026.sty`/author kit and anonymize the author block as required by the conference.
-
-The current manuscript is intentionally conservative about the evidence: the mechanism benchmark is exploratory, and the independent-teacher search result is reported as a single-query pilot rather than a production-scale claim.
+The local `rsa_icml_like.sty` is self-contained and follows an ICML-like two-column geometry for a reproducible preprint. For an actual ICML submission, use the official conference author kit and anonymize the author block as required.
