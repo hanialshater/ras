@@ -1,0 +1,96 @@
+\section{Random Semantic Algebra}
+\subsection{Fixed random 4-bit substrate}
+Sample a Gaussian matrix and take its orthogonal factor $R\in\R^{D\times D}$. For every item,
+\begin{equation}
+    z = xR, \qquad q_j = Q_j(z_j)\in\{0,\ldots,15\}.
+\end{equation}
+Before quantization, orthogonality preserves inner products and Euclidean distances exactly. The prototype learns per-coordinate quantization boundaries on the fit set. For $D=384$, a packed code costs $384\times4/8=192$ bytes/item, versus 1,536 bytes for FP32. This use of randomized low-bit geometry is inspired by work such as random-hyperplane hashing and RaBitQ \citep{charikar2002simhash,gao2024rabitq}; unlike those methods, our target is predicate execution rather than only distance estimation.
+
+\subsection{Sparse predicate programs}
+A concept $C$ is represented as
+\begin{equation}
+F_C(q)=b_C+\sum_{j\in J_C} f_{Cj}(q_j)
++\sum_{(j,k)\in P_C} g_{Cjk}(q_j,q_k),
+\label{eq:program}
+\end{equation}
+where each unary $f_{Cj}$ is a 16-entry table and each optional pair term $g_{Cjk}$ is a $16\times16$ table. This is a discrete, budgeted analogue of a generalized additive model with selected interactions \citep{lou2013ga2m,nori2019interpretml}. Serving cost is dominated by coordinate reads, table lookups, and additions.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[node distance=5mm, >=Latex, every node/.style={font=\scriptsize}]
+\tikzstyle{b}=[draw, rounded corners=2pt, align=center, minimum height=6mm, minimum width=20mm]
+\node[b] (q) {4-bit item code\\$q_1,\ldots,q_{384}$};
+\node[b, below left=7mm and -1mm of q] (u1) {$q_{17}$\\$\downarrow$ LUT$_{17}$};
+\node[b, below=7mm of q] (u2) {$q_{81}$\\$\downarrow$ LUT$_{81}$};
+\node[b, below right=7mm and -1mm of q] (pair) {$(q_{17},q_{81})$\\$\downarrow$ pair LUT};
+\node[b, below=8mm of u2, minimum width=27mm] (sum) {add selected evidence\\$F_C(q)$};
+\draw[->] (q) -- (u1); \draw[->] (q) -- (u2); \draw[->] (q) -- (pair);
+\draw[->] (u1) -- (sum); \draw[->] (u2) -- (sum); \draw[->] (pair) -- (sum);
+\end{tikzpicture}
+\caption{A compiled predicate touches only selected coordinates. The main search benchmark uses 24 unary tables and two pair tables (26 LUT operations/concept).}
+\label{fig:predicate}
+\end{figure}
+
+\subsection{Residual Newton boosting}
+Given current logits $s_i=F_C(q_i)$, let $p_i=\sigmoid(s_i)$, gradient residual $r_i=y_i-p_i$, and curvature $h_i=p_i(1-p_i)$. For candidate coordinate $j$ and bin $v$, define
+\begin{equation}
+G_{jv}=\sum_{i:q_{ij}=v} r_i,\qquad
+H_{jv}=\sum_{i:q_{ij}=v} h_i.
+\end{equation}
+The Newton table is $\Delta f_j(v)=G_{jv}/(H_{jv}+\lambda)$, with approximate gain
+\begin{equation}
+\mathcal{G}_j=\frac12\sum_v \frac{G_{jv}^2}{H_{jv}+\lambda}.
+\end{equation}
+At each stage we add the highest-gain coordinate not yet selected and update residuals. A short cyclic backfitting pass then refits the selected tables. Pair tables are learned analogously over joint $16\times16$ bins.
+
+\begin{algorithm}[t]
+\caption{Compile a latent predicate $C$}
+\label{alg:compile}
+\begin{algorithmic}[1]
+\Require Quantized fit codes $Q$, labels $y_C$, unary budget $K$, pair budget $M$
+\State $b\gets \logit((\sum_i y_i+0.5)/(n+1))$; $s_i\gets b$
+\State Build a candidate pool using marginal discriminative strength
+\For{$t=1,\ldots,K$}
+  \State $p_i\gets\sigmoid(s_i)$; $r_i\gets y_i-p_i$; $h_i\gets p_i(1-p_i)$
+  \For{each candidate coordinate $j$}
+    \State compute $\Delta f_j(v)=G_{jv}/(H_{jv}+\lambda)$ and gain $\mathcal{G}_j$
+  \EndFor
+  \State select $j^*=\arg\max_j\mathcal{G}_j$; add $\eta\Delta f_{j^*}$ to $F_C$ and $s$
+\EndFor
+\State cyclically refit selected unary tables with Newton updates
+\For{$m=1,\ldots,M$}
+  \State select the highest-gain pair among selected coordinates
+  \State add a $16\times16$ pair table $g_{jk}$
+\EndFor
+\State \Return sparse program $F_C$ with selected unary and pair tables
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Calibration and semantic algebra}
+Independently trained concept logits are not on a common evidence scale. On a held-out calibration split, fit a scalar map
+\begin{equation}
+L_C(x)=a_CF_C(q(x))+c_C, \qquad p_C(x)=\sigmoid(L_C(x)).
+\end{equation}
+For positive predicates $\mathcal{Q}^+$ and negated predicates $\mathcal{Q}^-$, we score
+\begin{equation}
+S_{\mathcal{Q}}(x)=\sum_{C\in\mathcal{Q}^+}\log p_C(x)+
+\sum_{C\in\mathcal{Q}^-}\log(1-p_C(x)).
+\label{eq:composition}
+\end{equation}
+This product-of-evidence operator is commutative and associative over the selected predicates, so a query can be assembled from independently compiled concepts. We evaluate AND and NOT; other operators are future work.
+
+\begin{algorithm}[t]
+\caption{Execute a semantic query plan}
+\label{alg:execute}
+\begin{algorithmic}[1]
+\Require ANN candidate set $A$, exact filters $E$, positive concepts $\mathcal{Q}^+$, negative concepts $\mathcal{Q}^-$, budget $B$
+\State $A'\gets\{x\in A:E(x)=\mathrm{true}\}$
+\For{each $x\in A'$}
+  \State evaluate only the compiled programs requested by the query
+  \State compute $S_{\mathcal{Q}}(x)$ using Eq.~\eqref{eq:composition}
+\EndFor
+\State retain the $B$ highest-scoring candidates
+\State \Return survivors to the downstream ranker
+\end{algorithmic}
+\end{algorithm}
+
