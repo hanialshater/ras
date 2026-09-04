@@ -56,9 +56,11 @@ class SemanticExecutor:
     def plan(self, positive: Iterable[str] = (), negative: Iterable[str] = ()) -> list[PredicateRef]:
         """Order likely-selective predicates first for native early-exit kernels."""
         refs = [PredicateRef(str(n), True) for n in positive] + [PredicateRef(str(n), False) for n in negative]
+
         def expected_acceptance(ref: PredicateRef) -> float:
             p = self.program(ref.name).positive_rate
             return float(p if ref.positive else 1.0 - p)
+
         return sorted(refs, key=expected_acceptance)
 
     def score_candidates(
@@ -69,6 +71,8 @@ class SemanticExecutor:
         negative: Iterable[str] = (),
     ) -> np.ndarray:
         ids = np.asarray(candidate_ids, dtype=np.int64)
+        positive = tuple(str(x) for x in positive)
+        negative = tuple(str(x) for x in negative)
         if ids.ndim != 1:
             raise ValueError("candidate_ids must be a 1D array of index row IDs")
         if len(ids) == 0:
@@ -98,6 +102,8 @@ class SemanticExecutor:
         k: int = 100,
     ) -> QueryResult:
         ids = np.asarray(candidate_ids, dtype=np.int64)
+        positive = tuple(str(x) for x in positive)
+        negative = tuple(str(x) for x in negative)
         t0 = time.perf_counter()
         scores = self.score_candidates(ids, positive=positive, negative=negative)
         t1 = time.perf_counter()
@@ -119,7 +125,7 @@ class SemanticExecutor:
             semantic_ms=(t1 - t0) * 1000.0,
             topk_ms=(t2 - t1) * 1000.0,
             input_candidates=int(len(ids)),
-            predicates=int(len(list(positive)) + len(list(negative))),
+            predicates=int(len(positive) + len(negative)),
         )
 
 
