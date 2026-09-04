@@ -57,33 +57,88 @@ fn args() -> Args {
         postfilter_oversample: 8,
         out: PathBuf::from("semantic_hnsw_results.csv"),
     };
+
     let mut i = 1;
     while i < xs.len() {
         match xs[i].as_str() {
-            "--assets" => { i += 1; a.assets = PathBuf::from(&xs[i]); }
-            "--programs" => { i += 1; a.programs = PathBuf::from(&xs[i]); }
-            "--positive" => { i += 1; a.positive = parse_list(&xs[i]); }
-            "--negative" => { i += 1; a.negative = parse_list(&xs[i]); }
-            "--queries" => { i += 1; a.queries = xs[i].parse().unwrap(); }
-            "--k" => { i += 1; a.k = xs[i].parse().unwrap(); }
-            "--ef" => { i += 1; a.ef = xs[i].parse().unwrap(); }
-            "--m" => { i += 1; a.m = xs[i].parse().unwrap(); }
-            "--ef-construction" => { i += 1; a.ef_construction = xs[i].parse().unwrap(); }
-            "--semantic-lambda" => { i += 1; a.semantic_lambda = xs[i].parse().unwrap(); }
-            "--gate-logprob" => { i += 1; a.gate_logprob = xs[i].parse().unwrap(); }
-            "--bridge-hops" => { i += 1; a.bridge_hops = xs[i].parse().unwrap(); }
-            "--bridge-cap" => { i += 1; a.bridge_cap = xs[i].parse().unwrap(); }
-            "--postfilter-oversample" => { i += 1; a.postfilter_oversample = xs[i].parse().unwrap(); }
-            "--out" => { i += 1; a.out = PathBuf::from(&xs[i]); }
+            "--assets" => {
+                i += 1;
+                a.assets = PathBuf::from(&xs[i]);
+            }
+            "--programs" => {
+                i += 1;
+                a.programs = PathBuf::from(&xs[i]);
+            }
+            "--positive" => {
+                i += 1;
+                a.positive = parse_list(&xs[i]);
+            }
+            "--negative" => {
+                i += 1;
+                a.negative = parse_list(&xs[i]);
+            }
+            "--queries" => {
+                i += 1;
+                a.queries = xs[i].parse().unwrap();
+            }
+            "--k" => {
+                i += 1;
+                a.k = xs[i].parse().unwrap();
+            }
+            "--ef" => {
+                i += 1;
+                a.ef = xs[i].parse().unwrap();
+            }
+            "--m" => {
+                i += 1;
+                a.m = xs[i].parse().unwrap();
+            }
+            "--ef-construction" => {
+                i += 1;
+                a.ef_construction = xs[i].parse().unwrap();
+            }
+            "--semantic-lambda" => {
+                i += 1;
+                a.semantic_lambda = xs[i].parse().unwrap();
+            }
+            "--gate-logprob" => {
+                i += 1;
+                a.gate_logprob = xs[i].parse().unwrap();
+            }
+            "--bridge-hops" => {
+                i += 1;
+                a.bridge_hops = xs[i].parse().unwrap();
+            }
+            "--bridge-cap" => {
+                i += 1;
+                a.bridge_cap = xs[i].parse().unwrap();
+            }
+            "--postfilter-oversample" => {
+                i += 1;
+                a.postfilter_oversample = xs[i].parse().unwrap();
+            }
+            "--out" => {
+                i += 1;
+                a.out = PathBuf::from(&xs[i]);
+            }
             "--help" | "-h" => {
-                println!("semantic_hnsw --assets DIR --programs DIR --positive a,b --negative c --queries 100 --k 50 --ef 128 --m 24 --ef-construction 200 --semantic-lambda 0.35 --gate-logprob -1.0 --bridge-hops 2 --bridge-cap 64 --postfilter-oversample 8 --out FILE");
+                println!(
+                    "semantic_hnsw --assets DIR --programs DIR --positive a,b --negative c \
+                     --queries 100 --k 50 --ef 128 --m 24 --ef-construction 200 \
+                     --semantic-lambda 0.35 --gate-logprob -1.0 --bridge-hops 2 \
+                     --bridge-cap 64 --postfilter-oversample 8 --out FILE"
+                );
                 std::process::exit(0);
             }
             _ => panic!("unknown argument {}", xs[i]),
         }
         i += 1;
     }
-    assert!(!a.positive.is_empty() || !a.negative.is_empty(), "at least one predicate required");
+
+    assert!(
+        !a.positive.is_empty() || !a.negative.is_empty(),
+        "at least one predicate required"
+    );
     assert!(a.ef >= a.k, "--ef must be at least --k");
     a
 }
@@ -144,19 +199,34 @@ impl Sidecar {
     fn load(index_root: &Path, program_root: &Path, positive: &[String], negative: &[String]) -> Self {
         let mut refs = Vec::new();
         for n in positive {
-            refs.push(PredRef { p: load_program(program_root, n), positive: true });
+            refs.push(PredRef {
+                p: load_program(program_root, n),
+                positive: true,
+            });
         }
         for n in negative {
-            refs.push(PredRef { p: load_program(program_root, n), positive: false });
+            refs.push(PredRef {
+                p: load_program(program_root, n),
+                positive: false,
+            });
         }
+
         let packed_bytes = refs[0].p.packed_bytes;
-        for r in &refs { assert_eq!(r.p.packed_bytes, packed_bytes); }
+        for r in &refs {
+            assert_eq!(r.p.packed_bytes, packed_bytes);
+        }
         let bits = fs::read(index_root.join("bits.u8")).unwrap();
         assert_eq!(bits.len() % packed_bytes, 0);
         let n = bits.len() / packed_bytes;
         let corr = read_f32(index_root.join("corrections.f32"));
         assert_eq!(corr.len(), n * 2);
-        Self { bits, corr, packed_bytes, refs }
+
+        Self {
+            bits,
+            corr,
+            packed_bytes,
+            refs,
+        }
     }
 
     #[inline(always)]
@@ -167,10 +237,15 @@ impl Sidecar {
         let hi_corr = self.corr[item * 2 + 1];
         let pos_count = doc.iter().map(|b| b.count_ones()).sum::<u32>();
         let mut total = 0.0f32;
+
         for r in &self.refs {
             let raw = raw_program_score(doc, pos_count, lo_corr, hi_corr, &r.p);
             let logit = r.p.cal_a * raw + r.p.cal_b;
-            total += if r.positive { log_sigmoid(logit) } else { log_sigmoid(-logit) };
+            total += if r.positive {
+                log_sigmoid(logit)
+            } else {
+                log_sigmoid(-logit)
+            };
         }
         total / self.refs.len() as f32
     }
@@ -183,9 +258,16 @@ fn load_u64_le(v: &[u8], off: usize) -> u64 {
 }
 
 #[inline(always)]
-fn raw_program_score(doc: &[u8], pos_count: u32, lo_corr: f32, hi_corr: f32, p: &Program) -> f32 {
+fn raw_program_score(
+    doc: &[u8],
+    pos_count: u32,
+    lo_corr: f32,
+    hi_corr: f32,
+    p: &Program,
+) -> f32 {
     let words = p.packed_bytes / 8;
     let mut weighted_q_pos = 0u32;
+
     for bit in 0..4 {
         let poff = bit * p.packed_bytes;
         let mut c = 0u32;
@@ -197,37 +279,49 @@ fn raw_program_score(doc: &[u8], pos_count: u32, lo_corr: f32, hi_corr: f32, p: 
         }
         weighted_q_pos += c << bit;
     }
+
     let pos_w = p.weight_lo * pos_count as f32 + p.weight_scale * weighted_q_pos as f32;
     p.base + lo_corr * (p.sum_w - pos_w) + hi_corr * pos_w
 }
 
 #[inline(always)]
 fn log_sigmoid(z: f32) -> f32 {
-    if z >= 0.0 { -(-z).exp().ln_1p() } else { z - z.exp().ln_1p() }
+    if z >= 0.0 {
+        -(-z).exp().ln_1p()
+    } else {
+        z - z.exp().ln_1p()
+    }
 }
 
 #[inline(always)]
 fn dot(items: &[f32], item: usize, query: &[f32]) -> f32 {
     let base = item * D;
     let mut s = 0.0f32;
-    for j in 0..D { s += unsafe { *items.get_unchecked(base + j) } * unsafe { *query.get_unchecked(j) }; }
+    for j in 0..D {
+        s += unsafe { *items.get_unchecked(base + j) } * unsafe { *query.get_unchecked(j) };
+    }
     s
 }
 
 #[derive(Debug)]
 struct Graph {
-    neigh: Vec<Vec<Vec<usize>>>, // node -> layer -> neighbours
+    neigh: Vec<Vec<Vec<usize>>>,
     level: Vec<usize>,
     max_level: usize,
-    entry: usize,
+    top_nodes: Vec<usize>,
 }
 
 fn extract_graph(hnsw: &Hnsw<'_, f32, DistCosine>, n: usize) -> Graph {
     let max_level = hnsw.get_max_level_observed() as usize;
     let mut neigh = (0..n)
-        .map(|_| (0..=max_level).map(|_| Vec::<usize>::new()).collect())
-        .collect::<Vec<Vec<Vec<usize>>>>();
+        .map(|_| {
+            (0..=max_level)
+                .map(|_| Vec::<usize>::new())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let mut level = vec![0usize; n];
+
     for p in hnsw.get_point_indexation().into_iter() {
         let id = p.get_origin_id();
         let pid = p.get_point_id();
@@ -237,30 +331,57 @@ fn extract_graph(hnsw: &Hnsw<'_, f32, DistCosine>, n: usize) -> Graph {
             neigh[id][l] = h[l].iter().map(|x| x.d_id).collect();
         }
     }
-    // hnsw_rs does not expose its internal entry point.  The entry point is the
-    // first point that reached the observed maximum level, which is also the
-    // first element of that layer under the library's insertion/indexation.
-    let entry = hnsw
-        .get_point_indexation()
-        .get_layer_iterator(max_level)
-        .next()
-        .expect("non-empty top HNSW layer")
-        .get_origin_id();
-    Graph { neigh, level, max_level, entry }
+
+    let mut top_nodes = Vec::new();
+    for (id, &l) in level.iter().enumerate() {
+        if l == max_level {
+            top_nodes.push(id);
+        }
+    }
+    assert!(!top_nodes.is_empty(), "HNSW top layer unexpectedly empty");
+
+    Graph {
+        neigh,
+        level,
+        max_level,
+        top_nodes,
+    }
 }
 
+/// Greedy descent through upper HNSW layers.
+///
+/// `hnsw_rs` does not expose its private entry point.  Rather than guessing a
+/// single top-layer node, choose the closest observed top-layer node first.
+/// The top layer is tiny, so this is cheap and avoids an artificial parity loss
+/// caused only by entry-point reconstruction.
 fn dense_entry_descent(graph: &Graph, items: &[f32], query: &[f32]) -> usize {
-    let mut cur = graph.entry;
+    let mut cur = graph.top_nodes[0];
+    let mut cur_score = dot(items, cur, query);
+    for &id in &graph.top_nodes[1..] {
+        let s = dot(items, id, query);
+        if s > cur_score {
+            cur = id;
+            cur_score = s;
+        }
+    }
+
     for l in (1..=graph.max_level).rev() {
-        if graph.level[cur] < l { continue; }
+        if graph.level[cur] < l {
+            continue;
+        }
         loop {
             let mut best = cur;
             let mut best_s = dot(items, cur, query);
             for &nb in &graph.neigh[cur][l] {
                 let s = dot(items, nb, query);
-                if s > best_s { best_s = s; best = nb; }
+                if s > best_s {
+                    best_s = s;
+                    best = nb;
+                }
             }
-            if best == cur { break; }
+            if best == cur {
+                break;
+            }
             cur = best;
         }
     }
@@ -268,14 +389,34 @@ fn dense_entry_descent(graph: &Graph, items: &[f32], query: &[f32]) -> usize {
 }
 
 #[derive(Copy, Clone, Debug)]
-struct ScoreNode { score: f32, id: usize }
-impl PartialEq for ScoreNode { fn eq(&self, o: &Self) -> bool { self.score.to_bits() == o.score.to_bits() && self.id == o.id } }
+struct ScoreNode {
+    score: f32,
+    id: usize,
+}
+
+impl PartialEq for ScoreNode {
+    fn eq(&self, o: &Self) -> bool {
+        self.score.to_bits() == o.score.to_bits() && self.id == o.id
+    }
+}
 impl Eq for ScoreNode {}
-impl PartialOrd for ScoreNode { fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) } }
-impl Ord for ScoreNode { fn cmp(&self, o: &Self) -> Ordering { self.score.total_cmp(&o.score).then_with(|| self.id.cmp(&o.id)) } }
+impl PartialOrd for ScoreNode {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl Ord for ScoreNode {
+    fn cmp(&self, o: &Self) -> Ordering {
+        self.score
+            .total_cmp(&o.score)
+            .then_with(|| self.id.cmp(&o.id))
+    }
+}
 
 fn push_topk(heap: &mut BinaryHeap<Reverse<ScoreNode>>, k: usize, id: usize, score: f32) {
-    if k == 0 { return; }
+    if k == 0 {
+        return;
+    }
     let e = ScoreNode { score, id };
     if heap.len() < k {
         heap.push(Reverse(e));
@@ -297,12 +438,25 @@ struct SemanticSearchResult {
     bridge_candidates: usize,
 }
 
-/// HNSW-like layer-0 beam search with optional semantic steering.
+#[inline(always)]
+fn nav_score(dense: f32, sem: f32, lambda: f32) -> f32 {
+    if lambda == 0.0 {
+        dense
+    } else {
+        dense + lambda * sem
+    }
+}
+
+/// Filter-aware HNSW layer-0 beam with optional semantic steering.
 ///
-/// The key invariant is that `ef` is a beam width, not a hard expansion cap.
-/// With `lambda == 0` and `bridge_hops == 0`, candidate admission and stopping
-/// reduce to standard dense HNSW layer search on the extracted graph. Semantic
-/// gating is applied only to the final beam in that parity mode.
+/// Crucial detail: `valid_beam` contains only nodes satisfying the semantic
+/// gate. Invalid nodes remain traversable through `candidates`, but they do not
+/// consume the `ef` result beam. Therefore a 48% semantic pass rate does not
+/// leave us with only ~0.48 * ef usable nodes. This mirrors the important
+/// behavior of `hnsw_rs::search_filter`.
+///
+/// With lambda=0 and bridge_hops=0 this becomes a dense, filter-aware HNSW walk.
+/// With lambda>0, semantic score also changes expansion/admission priority.
 fn semantic_search_c(
     graph: &Graph,
     items: &[f32],
@@ -321,93 +475,107 @@ fn semantic_search_c(
     let mut seen = vec![false; n];
     let mut semantic_used = vec![false; n];
 
-    // candidates: best navigation score first.
+    // Best navigation score first.
     let mut candidates = BinaryHeap::<ScoreNode>::new();
-    // beam: worst of the current best ef navigation scores at peek().
-    let mut beam = BinaryHeap::<Reverse<ScoreNode>>::new();
-    let mut bridge_candidates = 0usize;
+    // Worst valid navigation score at peek(); keeps the best ef valid nodes.
+    let mut valid_beam = BinaryHeap::<Reverse<ScoreNode>>::new();
+
     let mut expanded = 0usize;
+    let mut bridge_candidates = 0usize;
 
     let start_dense = dot(items, start, query);
-    let start_priority = if lambda == 0.0 {
-        start_dense
-    } else {
-        semantic_used[start] = true;
-        start_dense + lambda * sem[start]
-    };
-    let start_node = ScoreNode { score: start_priority, id: start };
-    candidates.push(start_node);
-    beam.push(Reverse(start_node));
+    semantic_used[start] = true;
+    let start_priority = nav_score(start_dense, sem[start], lambda);
+    candidates.push(ScoreNode {
+        score: start_priority,
+        id: start,
+    });
     seen[start] = true;
+    if start != skip && sem[start] >= gate {
+        valid_beam.push(Reverse(ScoreNode {
+            score: start_priority,
+            id: start,
+        }));
+    }
 
     while let Some(c) = candidates.pop() {
-        // Standard HNSW stopping rule in similarity form: if the best remaining
-        // candidate cannot improve the current ef-beam, exploration is done.
-        if beam.len() >= ef {
-            let worst = beam.peek().unwrap().0.score;
-            if c.score < worst { break; }
+        // Similarity-form HNSW stopping rule, but the threshold is the worst
+        // *valid* node. If fewer than ef valid nodes have been found, continue
+        // traversing through invalid bridges instead of stopping prematurely.
+        if valid_beam.len() >= ef {
+            let worst_valid = valid_beam.peek().unwrap().0.score;
+            if c.score < worst_valid {
+                break;
+            }
         }
 
         expanded += 1;
         let id = c.id;
-        let passes = if bridge_hops > 0 {
-            semantic_used[id] = true;
-            sem[id] >= gate
-        } else {
-            true
-        };
+        semantic_used[id] = true;
+        let passes = id != skip && sem[id] >= gate;
 
-        let mut neigh = Vec::<usize>::with_capacity(graph.neigh[id][0].len() + bridge_cap);
-        neigh.extend(graph.neigh[id][0].iter().copied());
+        let mut neighbours = Vec::<usize>::with_capacity(graph.neigh[id][0].len() + bridge_cap);
+        neighbours.extend(graph.neigh[id][0].iter().copied());
 
-        // ACORN-like bridge expansion: failed semantic nodes remain traversable
-        // and can contribute a bounded number of two-hop candidates.
+        // ACORN-like bridge expansion: a failed node can expose a bounded
+        // number of two-hop neighbours without itself becoming a result.
         if !passes && bridge_hops >= 2 && bridge_cap > 0 {
             let mut added = 0usize;
             'outer: for &nb in &graph.neigh[id][0] {
                 for &nn in &graph.neigh[nb][0] {
-                    neigh.push(nn);
+                    neighbours.push(nn);
                     bridge_candidates += 1;
                     added += 1;
-                    if added >= bridge_cap { break 'outer; }
+                    if added >= bridge_cap {
+                        break 'outer;
+                    }
                 }
             }
         }
 
-        for nb in neigh {
-            if nb >= n || seen[nb] { continue; }
-            // HNSW marks a point visited on first discovery even if it is not
-            // admitted to the beam.
+        for nb in neighbours {
+            if nb >= n || seen[nb] {
+                continue;
+            }
             seen[nb] = true;
-            let ds = dot(items, nb, query);
-            let priority = if lambda == 0.0 {
-                ds
-            } else {
-                semantic_used[nb] = true;
-                ds + lambda * sem[nb]
-            };
 
-            let admit = beam.len() < ef || priority > beam.peek().unwrap().0.score;
-            if admit {
-                let node = ScoreNode { score: priority, id: nb };
-                candidates.push(node);
-                beam.push(Reverse(node));
-                if beam.len() > ef { beam.pop(); }
+            let dense_s = dot(items, nb, query);
+            semantic_used[nb] = true;
+            let sem_s = sem[nb];
+            let priority = nav_score(dense_s, sem_s, lambda);
+
+            let can_improve = valid_beam.len() < ef
+                || priority > valid_beam.peek().unwrap().0.score;
+            if !can_improve {
+                continue;
+            }
+
+            let node = ScoreNode {
+                score: priority,
+                id: nb,
+            };
+            // Invalid nodes can still navigate the graph.
+            candidates.push(node);
+
+            // Only semantically valid nodes consume the ef result beam.
+            if nb != skip && sem_s >= gate {
+                valid_beam.push(Reverse(node));
+                if valid_beam.len() > ef {
+                    valid_beam.pop();
+                }
             }
         }
     }
 
-    // Return the top-k dense neighbours among semantically valid points in the
-    // final navigation beam.  This keeps lambda=0 comparable to ordinary HNSW
-    // followed by the same semantic gate, while lambda>0 can reshape the beam.
+    // Ground truth is top-k dense similarity among semantic-valid items, so
+    // final ranking is dense even when semantics steered traversal.
     let mut results = BinaryHeap::<Reverse<ScoreNode>>::new();
-    for x in beam.into_iter() {
+    for x in valid_beam.into_iter() {
         let id = x.0.id;
-        if id == skip { continue; }
-        semantic_used[id] = true;
-        if sem[id] >= gate {
-            push_topk(&mut results, k, id, dot(items, id, query));
+        if id == skip || sem[id] < gate {
+            continue;
         }
+        push_topk(&mut results, k, id, dot(items, id, query));
     }
 
     SemanticSearchResult {
@@ -418,19 +586,34 @@ fn semantic_search_c(
     }
 }
 
-fn brute_truth(items: &[f32], query: &[f32], sem: &[f32], gate: f32, k: usize, skip: usize) -> Vec<usize> {
+fn brute_truth(
+    items: &[f32],
+    query: &[f32],
+    sem: &[f32],
+    gate: f32,
+    k: usize,
+    skip: usize,
+) -> Vec<usize> {
     let mut heap = BinaryHeap::<Reverse<ScoreNode>>::new();
     for id in 0..sem.len() {
-        if id == skip || sem[id] < gate { continue; }
+        if id == skip || sem[id] < gate {
+            continue;
+        }
         push_topk(&mut heap, k, id, dot(items, id, query));
     }
     heap_ids(heap)
 }
 
 fn recall_at_k(found: &[usize], truth: &[usize]) -> f64 {
-    if truth.is_empty() { return 1.0; }
+    if truth.is_empty() {
+        return 1.0;
+    }
     let mut hit = 0usize;
-    for x in found { if truth.contains(x) { hit += 1; } }
+    for x in found {
+        if truth.contains(x) {
+            hit += 1;
+        }
+    }
     hit as f64 / truth.len() as f64
 }
 
@@ -439,16 +622,31 @@ fn main() {
     let items = read_f32(a.assets.join("fp32_items.f32"));
     assert_eq!(items.len() % D, 0);
     let n = items.len() / D;
+
     let index_root = a.assets.join("sidecar_index");
     let sidecar = Sidecar::load(&index_root, &a.programs, &a.positive, &a.negative);
     assert_eq!(sidecar.bits.len() / sidecar.packed_bytes, n);
 
-    println!("items={} dim={} m={} ef_construction={}", n, D, a.m, a.ef_construction);
-    println!("predicates={} gate_logprob={} semantic_lambda={}", sidecar.refs.len(), a.gate_logprob, a.semantic_lambda);
+    println!(
+        "items={} dim={} m={} ef_construction={}",
+        n, D, a.m, a.ef_construction
+    );
+    println!(
+        "predicates={} gate_logprob={} semantic_lambda={}",
+        sidecar.refs.len(),
+        a.gate_logprob,
+        a.semantic_lambda
+    );
 
     let t0 = Instant::now();
     let max_layer = 16usize.min(((n.max(2) as f64).ln().ceil() as usize).max(2));
-    let mut hnsw = Hnsw::<f32, DistCosine>::new(a.m, n, max_layer, a.ef_construction, DistCosine {});
+    let mut hnsw = Hnsw::<f32, DistCosine>::new(
+        a.m,
+        n,
+        max_layer,
+        a.ef_construction,
+        DistCosine {},
+    );
     for id in 0..n {
         hnsw.insert_slice((&items[id * D..(id + 1) * D], id));
     }
@@ -459,14 +657,30 @@ fn main() {
 
     let sem_t0 = Instant::now();
     let mut sem = Vec::with_capacity(n);
-    for i in 0..n { sem.push(sidecar.semantic_mean_logprob(i)); }
+    for i in 0..n {
+        sem.push(sidecar.semantic_mean_logprob(i));
+    }
     let qualified = sem.iter().filter(|&&s| s >= a.gate_logprob).count();
-    println!("semantic_precompute_ms={:.3}", sem_t0.elapsed().as_secs_f64() * 1000.0);
-    println!("qualified={} qualified_fraction={:.6}", qualified, qualified as f64 / n as f64);
-    assert!(qualified >= a.k, "semantic gate leaves fewer than k eligible items; lower --gate-logprob");
+    println!(
+        "semantic_precompute_ms={:.3}",
+        sem_t0.elapsed().as_secs_f64() * 1000.0
+    );
+    println!(
+        "qualified={} qualified_fraction={:.6}",
+        qualified,
+        qualified as f64 / n as f64
+    );
+    assert!(
+        qualified >= a.k,
+        "semantic gate leaves fewer than k eligible items; lower --gate-logprob"
+    );
 
     let mut out = BufWriter::new(File::create(&a.out).unwrap());
-    writeln!(out, "query_id,method,latency_ms,recall_at_k,returned,visited,semantic_evals,bridge_candidates,qualified_fraction").unwrap();
+    writeln!(
+        out,
+        "query_id,method,latency_ms,recall_at_k,returned,visited,semantic_evals,bridge_candidates,qualified_fraction"
+    )
+    .unwrap();
 
     let qn = a.queries.min(n);
     let mut sum_post_recall = 0.0;
@@ -491,54 +705,128 @@ fn main() {
         for x in raw {
             if x.d_id != qid && sem[x.d_id] >= a.gate_logprob {
                 post.push(x.d_id);
-                if post.len() == a.k { break; }
+                if post.len() == a.k {
+                    break;
+                }
             }
         }
         let post_ms = t.elapsed().as_secs_f64() * 1000.0;
         let post_r = recall_at_k(&post, &truth);
-        writeln!(out, "{qi},hnsw_postfilter,{post_ms:.6},{post_r:.6},{},0,0,0,{:.6}", post.len(), qualified as f64 / n as f64).unwrap();
+        writeln!(
+            out,
+            "{qi},hnsw_postfilter,{post_ms:.6},{post_r:.6},{},0,0,0,{:.6}",
+            post.len(),
+            qualified as f64 / n as f64
+        )
+        .unwrap();
 
-        // Baseline 2: hnsw_rs filtered traversal. Invalid points are traversable
-        // but cannot enter the result set.
+        // Baseline 2: hnsw_rs filter-aware traversal.
         let predicate = |id: &usize| *id != qid && sem[*id] >= a.gate_logprob;
         let t = Instant::now();
         let filtered = hnsw.search_filter(query, a.k, a.ef.max(a.k), Some(&predicate));
         let filter_ms = t.elapsed().as_secs_f64() * 1000.0;
         let filtered_ids: Vec<usize> = filtered.iter().map(|x| x.d_id).collect();
         let filter_r = recall_at_k(&filtered_ids, &truth);
-        writeln!(out, "{qi},hnsw_filtered,{filter_ms:.6},{filter_r:.6},{},0,0,0,{:.6}", filtered_ids.len(), qualified as f64 / n as f64).unwrap();
+        writeln!(
+            out,
+            "{qi},hnsw_filtered,{filter_ms:.6},{filter_r:.6},{},0,0,0,{:.6}",
+            filtered_ids.len(),
+            qualified as f64 / n as f64
+        )
+        .unwrap();
 
-        // Diagnostic parity baseline: our extracted-graph beam search with no
-        // semantic steering and no bridge expansion. This must approach normal
-        // HNSW quality before we interpret Variant C.
+        // Parity diagnostic: our custom filter-aware traversal without semantic
+        // steering or extra bridge expansion.
         let t = Instant::now();
         let parity = semantic_search_c(
-            &graph, &items, &sem, query, qid, a.k, a.ef,
-            0.0, a.gate_logprob, 0, 0,
+            &graph,
+            &items,
+            &sem,
+            query,
+            qid,
+            a.k,
+            a.ef,
+            0.0,
+            a.gate_logprob,
+            0,
+            0,
         );
         let parity_ms = t.elapsed().as_secs_f64() * 1000.0;
         let parity_r = recall_at_k(&parity.ids, &truth);
-        writeln!(out, "{qi},custom_hnsw_lambda0,{parity_ms:.6},{parity_r:.6},{},{},{},{},{:.6}", parity.ids.len(), parity.visited, parity.semantic_evals, parity.bridge_candidates, qualified as f64 / n as f64).unwrap();
+        writeln!(
+            out,
+            "{qi},custom_hnsw_lambda0,{parity_ms:.6},{parity_r:.6},{},{},{},{},{:.6}",
+            parity.ids.len(),
+            parity.visited,
+            parity.semantic_evals,
+            parity.bridge_candidates,
+            qualified as f64 / n as f64
+        )
+        .unwrap();
 
-        // Variant C: semantic-prioritized HNSW beam with ACORN-like bridges.
+        // Variant C: semantic-prioritized filter-aware HNSW + two-hop bridges.
         let t = Instant::now();
         let c = semantic_search_c(
-            &graph, &items, &sem, query, qid, a.k, a.ef,
-            a.semantic_lambda, a.gate_logprob, a.bridge_hops, a.bridge_cap,
+            &graph,
+            &items,
+            &sem,
+            query,
+            qid,
+            a.k,
+            a.ef,
+            a.semantic_lambda,
+            a.gate_logprob,
+            a.bridge_hops,
+            a.bridge_cap,
         );
         let c_ms = t.elapsed().as_secs_f64() * 1000.0;
         let c_r = recall_at_k(&c.ids, &truth);
-        writeln!(out, "{qi},semantic_hnsw_c,{c_ms:.6},{c_r:.6},{},{},{},{},{:.6}", c.ids.len(), c.visited, c.semantic_evals, c.bridge_candidates, qualified as f64 / n as f64).unwrap();
+        writeln!(
+            out,
+            "{qi},semantic_hnsw_c,{c_ms:.6},{c_r:.6},{},{},{},{},{:.6}",
+            c.ids.len(),
+            c.visited,
+            c.semantic_evals,
+            c.bridge_candidates,
+            qualified as f64 / n as f64
+        )
+        .unwrap();
 
-        sum_post_recall += post_r; sum_filter_recall += filter_r; sum_parity_recall += parity_r; sum_c_recall += c_r;
-        sum_post_ms += post_ms; sum_filter_ms += filter_ms; sum_parity_ms += parity_ms; sum_c_ms += c_ms;
+        sum_post_recall += post_r;
+        sum_filter_recall += filter_r;
+        sum_parity_recall += parity_r;
+        sum_c_recall += c_r;
+        sum_post_ms += post_ms;
+        sum_filter_ms += filter_ms;
+        sum_parity_ms += parity_ms;
+        sum_c_ms += c_ms;
     }
 
     let q = qn as f64;
-    println!("mean hnsw_postfilter      latency_ms={:.4} recall@{}={:.4}", sum_post_ms/q, a.k, sum_post_recall/q);
-    println!("mean hnsw_filtered        latency_ms={:.4} recall@{}={:.4}", sum_filter_ms/q, a.k, sum_filter_recall/q);
-    println!("mean custom_hnsw_lambda0 latency_ms={:.4} recall@{}={:.4}", sum_parity_ms/q, a.k, sum_parity_recall/q);
-    println!("mean semantic_hnsw_c      latency_ms={:.4} recall@{}={:.4}", sum_c_ms/q, a.k, sum_c_recall/q);
+    println!(
+        "mean hnsw_postfilter      latency_ms={:.4} recall@{}={:.4}",
+        sum_post_ms / q,
+        a.k,
+        sum_post_recall / q
+    );
+    println!(
+        "mean hnsw_filtered        latency_ms={:.4} recall@{}={:.4}",
+        sum_filter_ms / q,
+        a.k,
+        sum_filter_recall / q
+    );
+    println!(
+        "mean custom_hnsw_lambda0 latency_ms={:.4} recall@{}={:.4}",
+        sum_parity_ms / q,
+        a.k,
+        sum_parity_recall / q
+    );
+    println!(
+        "mean semantic_hnsw_c      latency_ms={:.4} recall@{}={:.4}",
+        sum_c_ms / q,
+        a.k,
+        sum_c_recall / q
+    );
     println!("results={}", a.out.display());
 }
 
@@ -565,26 +853,112 @@ mod tests {
         assert!(!ids.contains(&1));
     }
 
-    #[test]
-    fn ef_is_beam_width_not_expansion_cap_and_skip_is_honored() {
-        let n = 6usize;
-        let mut items = vec![0.0f32; n * D];
-        for i in 0..n { items[i * D] = i as f32; }
-        let mut neigh = (0..n).map(|_| vec![Vec::<usize>::new()]).collect::<Vec<_>>();
+    fn chain_graph(n: usize) -> Graph {
+        let mut neigh = (0..n)
+            .map(|_| vec![Vec::<usize>::new()])
+            .collect::<Vec<_>>();
         for i in 0..n {
-            if i > 0 { neigh[i][0].push(i - 1); }
-            if i + 1 < n { neigh[i][0].push(i + 1); }
+            if i > 0 {
+                neigh[i][0].push(i - 1);
+            }
+            if i + 1 < n {
+                neigh[i][0].push(i + 1);
+            }
         }
-        let graph = Graph { neigh, level: vec![0; n], max_level: 0, entry: 0 };
+        Graph {
+            neigh,
+            level: vec![0; n],
+            max_level: 0,
+            top_nodes: vec![0],
+        }
+    }
+
+    fn ordered_items(n: usize) -> Vec<f32> {
+        let mut items = vec![0.0f32; n * D];
+        for i in 0..n {
+            items[i * D] = i as f32;
+        }
+        items
+    }
+
+    #[test]
+    fn ef_is_not_a_hard_expansion_cap() {
+        let n = 6usize;
+        let graph = chain_graph(n);
+        let items = ordered_items(n);
         let sem = vec![0.0f32; n];
         let mut query = vec![0.0f32; D];
         query[0] = 1.0;
 
-        let r = semantic_search_c(&graph, &items, &sem, &query, usize::MAX, 1, 2, 0.0, -1.0, 0, 0);
-        assert!(r.visited > 2, "ef must not be treated as a hard expansion cap");
+        let r = semantic_search_c(
+            &graph,
+            &items,
+            &sem,
+            &query,
+            usize::MAX,
+            1,
+            2,
+            0.0,
+            -1.0,
+            0,
+            0,
+        );
+        assert!(r.visited > 2, "ef must be a beam width, not expansion cap");
         assert_eq!(r.ids, vec![5]);
+    }
 
-        let r_skip = semantic_search_c(&graph, &items, &sem, &query, 5, 1, 2, 0.0, -1.0, 0, 0);
-        assert_eq!(r_skip.ids, vec![4]);
+    #[test]
+    fn invalid_nodes_do_not_consume_valid_beam() {
+        let n = 6usize;
+        let graph = chain_graph(n);
+        let items = ordered_items(n);
+        let mut sem = vec![-10.0f32; n];
+        sem[5] = 0.0;
+        let mut query = vec![0.0f32; D];
+        query[0] = 1.0;
+
+        // With ef=2 and only the last point valid, a post-filtered two-item
+        // beam would fail. Filter-aware traversal must cross invalid nodes and
+        // still reach item 5.
+        let r = semantic_search_c(
+            &graph,
+            &items,
+            &sem,
+            &query,
+            usize::MAX,
+            1,
+            2,
+            0.0,
+            -1.0,
+            0,
+            0,
+        );
+        assert_eq!(r.ids, vec![5]);
+        assert!(r.visited >= 5);
+    }
+
+    #[test]
+    fn skip_id_is_not_returned_but_is_traversable() {
+        let n = 6usize;
+        let graph = chain_graph(n);
+        let items = ordered_items(n);
+        let sem = vec![0.0f32; n];
+        let mut query = vec![0.0f32; D];
+        query[0] = 1.0;
+
+        let r = semantic_search_c(
+            &graph,
+            &items,
+            &sem,
+            &query,
+            5,
+            1,
+            2,
+            0.0,
+            -1.0,
+            0,
+            0,
+        );
+        assert_eq!(r.ids, vec![4]);
     }
 }
