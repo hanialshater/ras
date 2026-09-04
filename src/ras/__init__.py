@@ -22,6 +22,7 @@ from .semantic_program import (
     fit_binary_predicate,
 )
 from .serving import PredicateRef, QueryResult, SemanticExecutor
+from .accounting import MethodFootprint, METHOD_FOOTPRINTS, decimal_mb, decimal_gb, memory_rows
 
 __all__ = [
     "QuantizedSubstrate", "build_substrate", "geometry_correlation",
@@ -32,4 +33,5 @@ __all__ = [
     "BinarySemanticIndex", "SemanticIndexManifest", "BinarySemanticProgram",
     "ProgramStore", "compile_linear_program", "fit_binary_predicate",
     "PredicateRef", "QueryResult", "SemanticExecutor",
+    "MethodFootprint", "METHOD_FOOTPRINTS", "decimal_mb", "decimal_gb", "memory_rows",
 ]
