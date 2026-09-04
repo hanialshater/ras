@@ -14,6 +14,8 @@ jobs:
           python-version: '3.11'
           cache: pip
       - name: Install package
-        run: pip install -e . pytest
+        run: pip install -e ".[dev]"
+      - name: Compile Python sources
+        run: python -m compileall -q src demos experiments tests
       - name: Run synthetic smoke tests
         run: pytest -q
