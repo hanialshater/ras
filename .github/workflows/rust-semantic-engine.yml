@@ -1,0 +1,22 @@
+name: rust-semantic-engine
+
+on:
+  push:
+    paths:
+      - 'rust/semantic_engine/**'
+      - '.github/workflows/rust-semantic-engine.yml'
+  pull_request:
+    paths:
+      - 'rust/semantic_engine/**'
+      - '.github/workflows/rust-semantic-engine.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Rust semantic engine
+        run: cargo test --release --manifest-path rust/semantic_engine/Cargo.toml
+      - name: Tiny benchmark smoke test
+        run: cargo run --release --manifest-path rust/semantic_engine/Cargo.toml -- --throughput-items 5000 --capacity-items 5000000 --repeats 1 --out /tmp/systems_results.csv
