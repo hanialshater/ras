@@ -1,33 +1,47 @@
-\subsection{Large-scale fixed-budget candidate pruning}
-Figure~\ref{fig:large_retention} and Table~\ref{tab:large_retention} summarize the main 44,072-product benchmark. \rsa dominates dense-only truncation at every nontrivial candidate budget. At 20\% retention, mean recall rises from 0.207 to 0.330, a 0.123 absolute gain (95\% paired bootstrap interval $[0.112,0.134]$) and a 59\% relative improvement. Purity rises simultaneously from 0.425 to 0.571, a paired gain of 0.145 $[0.135,0.156]$.
+
+\subsection{Quality--memory Pareto frontier}
+Table~\ref{tab:pareto20} summarizes the main 44,072-product benchmark at 20\% candidate retention. Every learned semantic method improves over dense-only truncation, but the compressed methods occupy substantially different memory regimes.
 
 \begin{table*}[t]
 \centering
-\caption{Mean candidate quality over 600 query--split cases. Recall (R) and purity (P) are measured within the exact-filtered top-5,000 ANN pool.}
-\label{tab:large_retention}
+\caption{Main independent-teacher result at 20\% retention over 600 query--split cases. Recall and purity are measured within the exact-filtered top-5,000 ANN pool.}
+\label{tab:pareto20}
 \small
-\begin{tabular}{rcccccccc}
+\begin{tabular}{lrrrr}
 \toprule
-& \multicolumn{4}{c}{Recall} & \multicolumn{4}{c}{Purity}\\
-\cmidrule(lr){2-5}\cmidrule(lr){6-9}
-Keep & Dense & RSA & FP32 & Oracle & Dense & RSA & FP32 & Oracle\\
+Method & Item B & Program B/concept & Recall & Purity\\
 \midrule
-5\%  & .052 & .097 & .111 & .219 & .430 & .628 & .672 & .985\\
-10\% & .105 & .183 & .205 & .385 & .430 & .608 & .647 & .963\\
-20\% & .207 & \textbf{.330} & .363 & .609 & .425 & \textbf{.571} & .606 & .888\\
-30\% & .312 & .455 & .490 & .748 & .424 & .542 & .571 & .813\\
-40\% & .414 & \textbf{.563} & .598 & .841 & .423 & \textbf{.519} & .543 & .741\\
-50\% & .513 & .659 & .692 & .904 & .421 & .499 & .519 & .674\\
+Dense MiniLM & 1536 & 0 & .207 & .425\\
+Zero-shot prompt difference & 1536 & 1536 & .249 & .470\\
+RSA1 centered random & 48 & 292 & .304 & .538\\
+RSA2 sparse LUT & 96 & 580 & .321 & .561\\
+RSA4 sparse LUT & 192 & 3652 & .330 & .571\\
+Binary1-LS2-int4 & \textbf{56} & \textbf{216} & .337 & .578\\
+PQ64 compiled linear & 64 & 65548 & .352 & .594\\
+FP32 linear & 1536 & 1548 & \textbf{.363} & \textbf{.606}\\
+Oracle & -- & -- & .609 & .888\\
 \bottomrule
 \end{tabular}
 \end{table*}
+
+Relative to dense retrieval, Binary1-LS2-int4 improves recall by 0.129 (95\% paired bootstrap interval $[0.118,0.140]$) and purity by 0.152 $[0.141,0.163]$. RSA4 improves recall by 0.123 $[0.111,0.134]$, while PQ64 improves it by 0.145 $[0.132,0.157]$. The binary compiler also exceeds RSA4 by 0.0063 recall $[0.0020,0.0105]$.
+
+The FP32 linear proxy reaches 0.363 recall. Measured as recovery of the incremental semantic gain over dense retrieval, Binary1-LS2-int4 captures
+\begin{equation}
+\frac{0.3365-0.2075}{0.3626-0.2075}=0.832,
+\end{equation}
+PQ64 captures 0.932, and RSA4 captures 0.791. Thus the gap between Binary1-LS2-int4 and PQ64 is 0.0155 absolute recall. In exchange, the binary program is about
+\begin{equation}
+\frac{65548}{216}=303.5
+\end{equation}
+times smaller and the item representation is 56 rather than 64 bytes.
 
 \begin{figure*}[t]
 \centering
 \begin{tikzpicture}
 \begin{groupplot}[
   group style={group size=2 by 1,horizontal sep=1.15cm},
-  width=0.43\textwidth,height=4.6cm,
+  width=0.43\textwidth,height=4.8cm,
   xmode=log, x dir=reverse, xmin=0.045,xmax=1.05,
   xlabel={Fraction retained},
   ymajorgrids=true, grid style={dotted},
@@ -36,48 +50,46 @@ Keep & Dense & RSA & FP32 & Oracle & Dense & RSA & FP32 & Oracle\\
 \nextgroupplot[ymin=0,ymax=1.03,ylabel={Mean relevant-item recall},legend to name=largelegend]
 \addplot[mark=*] coordinates {(1,1) (.5,.513077) (.4,.413610) (.3,.311596) (.2,.207452) (.1,.104661) (.05,.052164)};
 \addplot[mark=*] coordinates {(1,1) (.5,.659306) (.4,.563171) (.3,.454844) (.2,.330247) (.1,.182776) (.05,.097486)};
+\addplot[mark=*] coordinates {(1,1) (.5,.666446) (.4,.571090) (.3,.462380) (.2,.336515) (.1,.187423) (.05,.100665)};
+\addplot[mark=*] coordinates {(1,1) (.5,.681127) (.4,.587682) (.3,.478789) (.2,.352063) (.1,.198700) (.05,.107402)};
 \addplot[mark=*] coordinates {(1,1) (.5,.691526) (.4,.597658) (.3,.489974) (.2,.362647) (.1,.204808) (.05,.110685)};
 \addplot[mark=*] coordinates {(1,1) (.5,.904014) (.4,.840982) (.3,.747767) (.2,.608690) (.1,.385453) (.05,.219258)};
-\legend{Dense,RSA,FP32 proxy,Oracle}
+\legend{Dense,RSA4,Binary1-int4,PQ64,FP32,Oracle}
 \nextgroupplot[ymin=0.35,ymax=1.03,ylabel={Mean purity}]
 \addplot[mark=*] coordinates {(1,.413033) (.5,.421150) (.4,.423359) (.3,.424398) (.2,.425480) (.1,.429857) (.05,.430390)};
 \addplot[mark=*] coordinates {(1,.413033) (.5,.498705) (.4,.519457) (.3,.542392) (.2,.570977) (.1,.607669) (.05,.628079)};
+\addplot[mark=*] coordinates {(1,.413033) (.5,.503081) (.4,.524555) (.3,.548670) (.2,.577697) (.1,.613394) (.05,.632674)};
+\addplot[mark=*] coordinates {(1,.413033) (.5,.511790) (.4,.535423) (.3,.561723) (.2,.593655) (.1,.633863) (.05,.658441)};
 \addplot[mark=*] coordinates {(1,.413033) (.5,.518899) (.4,.542986) (.3,.571470) (.2,.606207) (.1,.647299) (.05,.671815)};
 \addplot[mark=*] coordinates {(1,.413033) (.5,.674143) (.4,.740784) (.3,.812629) (.2,.888483) (.1,.962814) (.05,.984605)};
 \end{groupplot}
-\node at ($(group c1r1.south east)!0.5!(group c2r1.south west)+(0,-0.95cm)$) {\ref{largelegend}};
+\node at ($(group c1r1.south east)!0.5!(group c2r1.south west)+(0,-1.05cm)$) {\ref{largelegend}};
 \end{tikzpicture}
-\caption{Main independent-teacher benchmark over 44,072 products and 600 query--split cases. \textbf{Left:} recall versus candidate budget. \textbf{Right:} purity. The FP32 proxy estimates the semantic signal available in the unquantized MiniLM representation; the oracle is the budget-constrained teacher upper bound.}
+\caption{Candidate-budget frontier on the independent-teacher benchmark. Binary1-LS2-int4 is the strongest tiny-program point; PQ64 is the strongest compressed quality point; FP32 remains the best search-side linear proxy.}
 \label{fig:large_retention}
 \end{figure*}
 
-At 20\% retention, the FP32 proxy reaches 0.363 recall. Relative to dense retrieval, \rsa captures
-\begin{equation}
-\frac{0.330-0.207}{0.363-0.207}=0.791
-\end{equation}
-of the additional recall available from the full-precision text-side semantic model. This fraction increases to 0.813 at 40\% retention. \rsa also beats dense recall on 86.7\% of query--split cases at 20\% retention and 88.2\% at 40\%.
+\subsection{Composition depth is confounded by prevalence}
+A raw stratification by the number of latent predicates suggests larger semantic gains for deeper conjunctions. However, deeper conjunctions also have lower teacher prevalence inside the candidate pool, which makes fixed-budget pruning easier. We therefore re-analyzed the per-query 20\% recall deltas with pool prevalence as a covariate. In an exploratory OLS regression of method-minus-dense recall on latent count and teacher prevalence, the latent-count coefficient is $-0.0033$ for Binary1-LS2-int4 ($p=0.58$) and $-0.0026$ for RSA4 ($p=0.67$). We therefore find no evidence in this benchmark that composition depth itself increases the advantage after accounting for prevalence, and we do not use the raw depth trend as a headline result.
 
-The effect is stable across the three strict splits. At 20\%, the mean RSA-minus-dense recall gains are $+0.1244$, $+0.1261$, and $+0.1179$ for seeds 7, 17, and 27 respectively.
-
-\subsection{Gains grow with semantic composition depth}
-The benchmark generator creates one to three positive latent predicates and optionally one negated predicate. Table~\ref{tab:complexity} stratifies the 20\% candidate-budget result by the number of latent predicates in the query. Dense recall remains roughly flat, while \rsa's advantage increases as more independently compiled semantic constraints must be satisfied.
+\subsection{Native execution on real codes and programs}
+The quality experiment exports the actual first-split held-out representations and learned programs to a Rust executor. Table~\ref{tab:native} reports throughput at a 100k-candidate pool with a 500k-item resident working set. PQ64 is fastest at this large pool across all predicate counts. Binary1-LS2-int4 closes the gap as more predicates are fused: with eight active predicates it reaches 1.98M candidates/s, within 3.3\% of PQ64's 2.04M/s and about 4.8$\times$ the FP32 rate.
 
 \begin{table}[t]
 \centering
-\caption{Recall at 20\% retention by number of latent predicates.}
-\label{tab:complexity}
+\caption{Single-threaded native throughput at 100k candidates (million candidates/s). Real held-out rows/programs, 500k resident items, median of five repetitions.}
+\label{tab:native}
 \small
-\begin{tabular}{rcrrr}
+\begin{tabular}{rcccc}
 \toprule
-Latents & Cases & Dense & RSA & $\Delta$\\
+Predicates & FP32 & PQ64 & Binary1-int4 & RSA2\\
 \midrule
-1 & 184 & .208 & .283 & +.076\\
-2 & 263 & .207 & .337 & +.129\\
-3 & 121 & .213 & .369 & +.156\\
-4 & 32  & .186 & .402 & +.216\\
+1 & 1.301 & \textbf{7.010} & 5.241 & 6.778\\
+2 & 1.042 & \textbf{5.812} & 4.534 & 4.760\\
+4 & 0.747 & \textbf{3.802} & 3.200 & 3.004\\
+8 & 0.413 & \textbf{2.044} & 1.977 & 1.737\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-This trend is consistent with the intended role of \rsa: it is most useful when the query is not merely a semantic-nearest-neighbor request, but a composition of reusable judgments that a single dense similarity score does not explicitly execute.
-
+These measurements sharpen the systems picture. PQ64 combines excellent compressed quality with the best large-pool throughput, but pays a large per-predicate program store. Binary1-LS2-int4 trades 0.0155 recall at 20\% retention for 303$\times$ smaller programs and slightly smaller item codes while remaining close to PQ throughput for multi-predicate execution. The current native benchmark activates at most eight concepts, so it does not yet measure the cache effects of a very large semantic vocabulary.
