@@ -1,16 +1,15 @@
 """Compile and persist tiny semantic predicates for a binary semantic index.
 
 A Binary1-LS2-int4 program stores four packed bit planes (the 384 int4 weights)
-and six f32 scalars.  For D=384 this is 192 + 24 = 216 theoretical payload
-bytes per predicate, excluding filesystem/container metadata.
+and six f32 scoring/calibration scalars.  For D=384 this is 192 + 24 = 216
+scoring-payload bytes per predicate, excluding planner/filesystem metadata.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
-from typing import Iterable
 
 import numpy as np
 from sklearn.linear_model import SGDClassifier
@@ -187,6 +186,21 @@ class ProgramStore:
             raise FileExistsError(root)
         root.mkdir(parents=True, exist_ok=True)
         np.ascontiguousarray(program.bitplanes, dtype=np.uint8).tofile(root / "bitplanes.u8")
+        # Native executor reads these seven f32 values directly.  The first six
+        # are the 216-byte scoring payload accounting; positive_rate is planner
+        # metadata used only to order likely-selective predicates first.
+        np.asarray(
+            [
+                program.weight_lo,
+                program.weight_scale,
+                program.base,
+                program.sum_w,
+                program.calibration_a,
+                program.calibration_b,
+                program.positive_rate,
+            ],
+            dtype=np.float32,
+        ).tofile(root / "scalars.f32")
         meta = {
             "version": PROGRAM_FORMAT_VERSION,
             "name": program.name,
