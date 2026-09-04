@@ -1,0 +1,5 @@
+\section{Problem Setting}
+Let $x\in\R^D$ be a normalized item embedding and $q$ a query embedding. Dense retrieval scores $q^\top x$. Exact predicates, denoted $E(x)$, are stored catalog facts and should remain conventional filters. A \emph{latent predicate} $C$ is a binary semantic judgment supplied by a teacher $T_C(x)\in\{0,1\}$, where the teacher may be a VLM, human annotation process, or specialized model.
+
+The target is a compiler that maps labeled examples into a cheap executable object $F_C$, while keeping the item representation fixed across concepts. We seek: (i) no catalog re-encoding when adding a concept; (ii) low per-item storage; (iii) tens rather than hundreds of arithmetic operations per concept; and (iv) composition of independently learned concepts without conjunction-specific training.
+
