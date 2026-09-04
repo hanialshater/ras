@@ -23,7 +23,7 @@ rsa:
 
 benchmark:
   seeds: [7, 17, 27]
-  ann_pool: 2000
+  ann_pool: 5000
   n_queries: 200
   min_fit_truth: 100
   max_positive_latents: 3
