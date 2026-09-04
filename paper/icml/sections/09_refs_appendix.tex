@@ -1,0 +1,60 @@
+\begin{thebibliography}{99}
+
+\bibitem[J{\'e}gou et~al.(2011)J{\'e}gou, Douze, and Schmid]{jegou2011pq}
+H. J{\'e}gou, M. Douze, and C. Schmid. Product Quantization for Nearest Neighbor Search. \emph{IEEE TPAMI}, 33(1):117--128, 2011.
+
+\bibitem[Charikar(2002)]{charikar2002simhash}
+M. S. Charikar. Similarity Estimation Techniques from Rounding Algorithms. In \emph{STOC}, pp. 380--388, 2002.
+
+\bibitem[Gao and Long(2024)]{gao2024rabitq}
+J. Gao and C. Long. RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound for Approximate Nearest Neighbor Search. \emph{arXiv:2405.12497}, 2024.
+
+\bibitem[Dhulipala et~al.(2024)Dhulipala, Hadian, Jayaram, Lee, and Mirrokni]{dhulipala2024muvera}
+L. Dhulipala, M. Hadian, R. Jayaram, J. Lee, and V. Mirrokni. MUVERA: Multi-Vector Retrieval via Fixed Dimensional Encodings. In \emph{NeurIPS}, 2024.
+
+\bibitem[Chronis et~al.(2025)Chronis, Caminal, Papakonstantinou, {\"O}zcan, and Ailamaki]{chronis2025filtered}
+Y. Chronis, H. Caminal, Y. Papakonstantinou, F. {\"O}zcan, and A. Ailamaki. Filtered Vector Search: State-of-the-Art and Research Opportunities. \emph{PVLDB}, 18(12):5488--5492, 2025.
+
+\bibitem[Patel et~al.(2025)Patel, Jha, Pan, Gupta, Asawa, Guestrin, and Zaharia]{patel2025lotus}
+L. Patel, S. Jha, M. Pan, H. Gupta, P. Asawa, C. Guestrin, and M. Zaharia. Semantic Operators and Their Optimization: Enabling LLM-Based Data Processing with Accuracy Guarantees in LOTUS. \emph{PVLDB}, 18(11):4171--4184, 2025.
+
+\bibitem[Kim et~al.(2026)Kim, Catheland, and Ailamaki]{kim2026semanticfilter}
+K. Kim, M. Catheland, and A. Ailamaki. Fast LLM-Based Semantic Filtering: From a Unified Framework to an Adaptive Two-Phase Method. \emph{arXiv:2606.08090}, 2026.
+
+\bibitem[Dong and Wang(2026)]{dong2026compilation}
+W. Dong and Y. Wang. From Interpretation to Compilation: Compilation-Based Execution of Semantic Operators [Vision]. \emph{arXiv:2607.13407}, 2026.
+
+\bibitem[Lou et~al.(2013)Lou, Caruana, Gehrke, and Hooker]{lou2013ga2m}
+Y. Lou, R. Caruana, J. Gehrke, and G. Hooker. Accurate Intelligible Models with Pairwise Interactions. In \emph{KDD}, pp. 623--631, 2013.
+
+\bibitem[Nori et~al.(2019)Nori, Jenkins, Koch, and Caruana]{nori2019interpretml}
+H. Nori, S. Jenkins, P. Koch, and R. Caruana. InterpretML: A Unified Framework for Machine Learning Interpretability. \emph{arXiv:1909.09223}, 2019.
+
+\bibitem[Reimers and Gurevych(2019)]{reimers2019sbert}
+N. Reimers and I. Gurevych. Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks. In \emph{EMNLP-IJCNLP}, pp. 3982--3992, 2019.
+
+\bibitem[Wang et~al.(2020)Wang, Wei, Dong, Bao, Yang, and Zhou]{wang2020minilm}
+W. Wang, F. Wei, L. Dong, H. Bao, N. Yang, and M. Zhou. MiniLM: Deep Self-Attention Distillation for Task-Agnostic Compression of Pre-Trained Transformers. In \emph{NeurIPS}, 2020.
+
+\bibitem[Radford et~al.(2021)]{radford2021clip}
+A. Radford et~al. Learning Transferable Visual Models From Natural Language Supervision. In \emph{ICML}, pp. 8748--8763, 2021.
+
+\bibitem[Ashraq(2026)]{fashiondataset}
+Ashraq. Fashion Product Images Small. Hugging Face Datasets, accessed 2026.
+
+\end{thebibliography}
+
+\appendix
+\section{Additional Experimental Detail}
+\subsection{Original geometry sanity check}
+The original mechanism run measured correlation 0.9102 between source cosine similarity and 1-bit Hamming agreement, and 0.9761 between source cosine and a 4-bit negative-$\ell_1$ surrogate over random held-out pairs. These values motivate the low-bit substrate but are not ANN recall guarantees.
+
+\subsection{Storage accounting}
+For $D=384$, source FP32 embeddings require 1,536 bytes/item. A packed 4-bit substrate requires 192 bytes/item and a packed 1-bit substrate 48 bytes/item. Current NumPy prototypes store codes in \code{uint8}; all storage claims in the paper refer to the packed systems representation. A unary semantic program with 24 active coordinates and 16 int8 values per coordinate requires 384 table bytes plus coordinate identifiers and an intercept; the main benchmark adds two $16\times16$ pair tables.
+
+\subsection{Mechanism ablations}
+The selected ablations reported in the main text are reproduced by the mechanism experiment in the repository; full per-concept and per-configuration outputs are emitted as CSV artifacts.
+
+\subsection{Reproducibility}
+The main benchmark is produced by \path{experiments/large_scale_search.py} with \path{configs/large_scale.yaml}. The reported run contains all 44,072 products, seeds 7/17/27, a top-5,000 retrieval pool, 200 fit-generated compound queries per seed, 24 unary and two pair LUTs per concept, and 2,000 bootstrap resamples. The result bundle is \texttt{20260904T100524Z\_8204ed57bf} at Git commit \texttt{fea235e}. It was executed on an NVIDIA A100-SXM4-40GB. Each run writes the configuration, environment manifest, predicate metrics, query definitions, per-query rows, aggregate summaries, paired deltas, and figures. The repository also contains a public Colab launcher for smoke and full reproduction.
+
