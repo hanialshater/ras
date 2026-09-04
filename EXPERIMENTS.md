@@ -25,6 +25,35 @@ The quality suite compares:
 
 All supervised methods use strict fit/calibration/test splits. Query templates are generated from fit labels only. The script also repeats the composition-depth analysis after stratifying by conjunction prevalence.
 
+## Binary / BBQ-inspired kill test
+
+Open:
+
+https://colab.research.google.com/github/hanialshater/ras/blob/main/notebooks/rsa_binary_bbq_experiment_colab.ipynb
+
+Start with `FULL_RUN = False`; if the smoke run is sensible, rerun with `FULL_RUN = True`.
+
+This experiment asks whether the semantic-substrate idea survives at roughly BBQ/PQ memory scale. It compares:
+
+- FP32 supervised linear predicates;
+- PQ64 + compiled linear LUTs;
+- a **BBQ-inspired** globally centered 1-bit document code with two per-item least-squares reconstruction values, evaluated with either FP32 or int4 predicate weights;
+- RSA1 sparse learned predicates on centered identity bits (48 B/item);
+- RSA1 sparse learned predicates on centered random-orthogonal bits (48 B/item);
+- RSA2 random quantile predicates (96 B/item);
+- RSA4 random quantile predicates (192 B/item);
+- zero-shot MiniLM, dense, and oracle baselines.
+
+The BBQ-inspired method is intentionally not called an exact Lucene BBQ implementation. Lucene BBQ uses additional correction terms and a specialized asymmetric bitwise estimator. Our baseline isolates the relevant design principles for semantic predicate execution: a global centroid, one stored bit per document dimension, tiny per-item correction state, and optional int4 predicate weights.
+
+The run writes `pareto_at_20pct.csv` with recall, purity, item bytes, and approximate predicate-program bytes. It also writes `native_export_first_seed.npz`, containing real packed test codes and int4 predicate bitplanes, so a successful binary quality result can immediately be moved into the Rust popcount executor.
+
+The decision rule is simple:
+
+1. If RSA1 retains most of RSA4 quality, implement/benchmark the native popcount mask executor.
+2. If the BBQ-inspired int4 compiled linear head dominates RSA1, treat it as the stronger binary baseline and test whether RSA earns its complexity through nonlinear predicates or sparse compositional programs.
+3. If 1-bit quality collapses but RSA2 is strong, optimize the 2-bit representation instead.
+
 ## Rust systems benchmark
 
 The fairness-focused benchmark is:
@@ -71,9 +100,10 @@ Within prevalence quartiles the monotonic depth trend disappears. An exploratory
 
 ## What remains before changing the paper's central claim
 
-1. Run the full reviewer quality suite and establish where random RSA sits relative to zero-shot, no-rotation, PCA, PQ64, linear, and MLP baselines.
-2. Repeat the Rust benchmark on the Colab/target CPU with 5 repeats and record CPU model, compiler version, and thread count.
-3. Combine quality, storage, and measured throughput into a Pareto table/figure.
-4. If possible, run an actual 5M-item RSA-resident benchmark and a second dataset/domain.
+1. Run the binary / BBQ-inspired smoke experiment and determine whether 1-bit or 2-bit is a viable semantic substrate.
+2. If binary quality is viable, execute the exported real codes and real predicate bitplanes in Rust rather than synthetic codes.
+3. Repeat the Rust benchmark on the target CPU with 5 repeats and record CPU model, compiler version, and thread count.
+4. Combine quality, storage, predicate-program storage, and measured throughput into a Pareto table/figure.
+5. If possible, run an actual 5M-item resident benchmark and a second dataset/domain.
 
 Until those are complete, the Rust numbers should be described as preliminary systems evidence rather than a final production claim.
