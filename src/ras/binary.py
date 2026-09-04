@@ -1,20 +1,19 @@
 """Centered one-bit semantic substrates and BBQ-inspired linear scoring.
 
-This module deliberately separates two ideas:
+This module deliberately separates three ideas:
 
-1. ``CenteredBinaryCode`` stores one bit per projected embedding dimension after
-   subtracting a fit-set centroid.  Two per-item least-squares correction values
-   store the mean residual value on the negative and positive sides.
-2. ``score_compiled_linear`` evaluates a full-precision linear semantic head on
-   that compressed representation.  The predicate weights may optionally be
-   quantized to int4, matching the asymmetric 1-bit-document / 4-bit-query spirit
-   of Elastic BBQ.
+1. ``CenteredBinaryEncoder`` is the concept-independent transformation fitted
+   once for a catalog.  It stores a centroid and an optional orthogonal
+   projection.
+2. ``CenteredBinaryCode`` is the historical fit/cal/test experiment container.
+3. ``score_compiled_linear`` evaluates a full-precision linear semantic head on
+   the compressed representation.  Predicate weights may optionally be
+   quantized to int4, matching the asymmetric 1-bit-document / 4-bit-query
+   spirit of Elastic BBQ.
 
 This is *BBQ-inspired*, not a byte-for-byte reimplementation of Lucene BBQ.
-It is intended as a controlled semantic-predicate baseline: can a centered
-binary document code plus tiny corrective state preserve a learned linear
-predicate?  The exact Lucene estimator uses additional correction terms and a
-specialized bitwise kernel.
+The exact Lucene estimator uses additional correction terms and a specialized
+bitwise kernel.
 """
 from __future__ import annotations
 
@@ -24,6 +23,29 @@ from typing import Literal
 import numpy as np
 
 from .substrate import random_orthogonal
+
+
+@dataclass
+class CenteredBinaryEncoder:
+    """Concept-independent encoder fitted once and reused for every predicate."""
+
+    centroid: np.ndarray
+    projection: np.ndarray
+    projection_kind: str
+    seed: int
+    with_corrections: bool = True
+
+    @property
+    def d(self) -> int:
+        return int(self.centroid.shape[0])
+
+    @property
+    def packed_bytes(self) -> int:
+        return (self.d + 7) // 8
+
+    @property
+    def item_bytes_theoretical(self) -> float:
+        return float(self.packed_bytes + (8 if self.with_corrections else 0))
 
 
 @dataclass
@@ -46,7 +68,7 @@ class CenteredBinaryCode:
         return int(self.Q_fit.shape[1])
 
 
-def _two_level_corrections(residual: np.ndarray, bits: np.ndarray) -> np.ndarray:
+def two_level_corrections(residual: np.ndarray, bits: np.ndarray) -> np.ndarray:
     """Least-squares two-level reconstruction values per item.
 
     For each item, all negative residual coordinates are reconstructed by their
@@ -64,6 +86,62 @@ def _two_level_corrections(residual: np.ndarray, bits: np.ndarray) -> np.ndarray
     return np.column_stack([lo, hi]).astype(np.float32)
 
 
+# Backward-compatible private name used by older experiment code.
+_two_level_corrections = two_level_corrections
+
+
+def fit_centered_binary_encoder(
+    X_fit: np.ndarray,
+    *,
+    seed: int = 7,
+    projection_kind: Literal["identity", "orthogonal"] = "identity",
+    with_corrections: bool = True,
+) -> CenteredBinaryEncoder:
+    """Fit the catalog-wide binary encoder on representative embeddings."""
+    X_fit = np.asarray(X_fit, dtype=np.float32)
+    if X_fit.ndim != 2:
+        raise ValueError("X_fit must be a 2D [items, dimensions] array")
+    d = int(X_fit.shape[1])
+    if projection_kind == "identity":
+        projection = np.eye(d, dtype=np.float32)
+    elif projection_kind == "orthogonal":
+        projection = random_orthogonal(d, np.random.default_rng(int(seed)))
+    else:
+        raise ValueError(projection_kind)
+    z_fit = (X_fit @ projection).astype(np.float32)
+    centroid = z_fit.mean(axis=0).astype(np.float32)
+    return CenteredBinaryEncoder(
+        centroid=centroid,
+        projection=projection.astype(np.float32),
+        projection_kind=str(projection_kind),
+        seed=int(seed),
+        with_corrections=bool(with_corrections),
+    )
+
+
+def encode_centered_binary(
+    X: np.ndarray,
+    encoder: CenteredBinaryEncoder,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Encode arbitrary items using a previously fitted catalog encoder.
+
+    Returns unpacked sign bits with shape ``[n, d]`` and two per-item correction
+    values with shape ``[n, 2]``.  Use :func:`pack_document_bits` for the serving
+    representation.
+    """
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim != 2 or X.shape[1] != encoder.d:
+        raise ValueError(f"X must have shape [n, {encoder.d}]")
+    z = (X @ encoder.projection).astype(np.float32)
+    residual = z - encoder.centroid
+    q = (residual > 0).astype(np.uint8)
+    if encoder.with_corrections:
+        corrections = two_level_corrections(residual, q)
+    else:
+        corrections = np.zeros((len(q), 2), dtype=np.float32)
+    return q, corrections
+
+
 def build_centered_binary_code(
     X_fit: np.ndarray,
     X_cal: np.ndarray,
@@ -73,33 +151,17 @@ def build_centered_binary_code(
     projection_kind: Literal["identity", "orthogonal"] = "identity",
     with_corrections: bool = True,
 ) -> CenteredBinaryCode:
-    """Fit a global centroid and store one sign bit per projected dimension."""
-    d = int(X_fit.shape[1])
-    if projection_kind == "identity":
-        projection = np.eye(d, dtype=np.float32)
-    elif projection_kind == "orthogonal":
-        projection = random_orthogonal(d, np.random.default_rng(int(seed)))
-    else:
-        raise ValueError(projection_kind)
-
-    Zf = (X_fit @ projection).astype(np.float32)
-    Zc = (X_cal @ projection).astype(np.float32)
-    Zt = (X_test @ projection).astype(np.float32)
-    centroid = Zf.mean(axis=0).astype(np.float32)
-    Rf, Rc, Rt = Zf - centroid, Zc - centroid, Zt - centroid
-    Qf, Qc, Qt = [(r > 0).astype(np.uint8) for r in (Rf, Rc, Rt)]
-
-    if with_corrections:
-        Cf = _two_level_corrections(Rf, Qf)
-        Cc = _two_level_corrections(Rc, Qc)
-        Ct = _two_level_corrections(Rt, Qt)
-        correction_bytes = 8.0  # two f32 values per item
-    else:
-        Cf = np.zeros((len(Qf), 2), dtype=np.float32)
-        Cc = np.zeros((len(Qc), 2), dtype=np.float32)
-        Ct = np.zeros((len(Qt), 2), dtype=np.float32)
-        correction_bytes = 0.0
-
+    """Historical fit/cal/test wrapper around the reusable encoder API."""
+    encoder = fit_centered_binary_encoder(
+        X_fit,
+        seed=int(seed),
+        projection_kind=projection_kind,
+        with_corrections=bool(with_corrections),
+    )
+    Qf, Cf = encode_centered_binary(X_fit, encoder)
+    Qc, Cc = encode_centered_binary(X_cal, encoder)
+    Qt, Ct = encode_centered_binary(X_test, encoder)
+    correction_bytes = 8.0 if with_corrections else 0.0
     return CenteredBinaryCode(
         name=f"centered_binary_{projection_kind}",
         Q_fit=Qf,
@@ -108,11 +170,11 @@ def build_centered_binary_code(
         correction_fit=Cf,
         correction_cal=Cc,
         correction_test=Ct,
-        centroid=centroid,
-        projection=projection.astype(np.float32),
-        projection_kind=projection_kind,
-        item_bytes_theoretical=d / 8.0 + correction_bytes,
-        meta={"d": d, "seed": int(seed), "correction_bytes": correction_bytes},
+        centroid=encoder.centroid,
+        projection=encoder.projection,
+        projection_kind=encoder.projection_kind,
+        item_bytes_theoretical=float(encoder.packed_bytes + correction_bytes),
+        meta={"d": encoder.d, "seed": int(seed), "correction_bytes": correction_bytes},
     )
 
 
@@ -137,18 +199,10 @@ def score_compiled_linear(
     *,
     int4_query: bool = False,
 ) -> np.ndarray:
-    """Approximate ``x @ weight + intercept`` from centered one-bit codes.
-
-    A row residual is reconstructed with two values, ``lo`` on zero bits and
-    ``hi`` on one bits.  For an orthogonal projection ``z=xR``, the equivalent
-    linear weight is ``R.T @ weight``.
-    """
+    """Approximate ``x @ weight + intercept`` from centered one-bit codes."""
     wz = (code.projection.T @ np.asarray(weight, dtype=np.float32)).astype(np.float32)
     if int4_query:
         _, wz, _, _ = quantize_weight_int4(wz)
-
-    # Reconstructed residual dot product:
-    # lo * sum_{bit=0} w + hi * sum_{bit=1} w.
     pos_weight_sum = Q.astype(np.float32) @ wz
     sum_w = float(wz.sum())
     lo = corrections[:, 0]
@@ -170,7 +224,11 @@ def int4_weight_bitplanes(qweight: np.ndarray) -> np.ndarray:
 
 
 __all__ = [
+    "CenteredBinaryEncoder",
     "CenteredBinaryCode",
+    "fit_centered_binary_encoder",
+    "encode_centered_binary",
+    "two_level_corrections",
     "build_centered_binary_code",
     "quantize_weight_int4",
     "score_compiled_linear",
