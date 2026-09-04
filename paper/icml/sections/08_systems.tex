@@ -15,7 +15,7 @@ T_{\mathrm{search}} = T_{\mathrm{ANN}} + T_{\mathrm{filter}} + T_{\mathrm{semant
 + T_{\mathrm{top}k} + T_{\mathrm{rank}} + T_{\mathrm{RPC}}.
 \label{eq:latency_decomp}
 \end{equation}
-The native results in Section~\ref{tab:native} measure a single-threaded semantic \emph{microkernel}: real learned item codes and programs are resident, but ANN traversal, filtering, calibrated composition, heap maintenance, networking, and downstream ranking are excluded.  Table~\ref{tab:latency} reports the same measurements as elapsed time, which is easier to relate to search-stage budgets.
+The native results in Table~\ref{tab:native} measure a single-threaded semantic \emph{microkernel}: real learned item codes and programs are resident, but ANN traversal, filtering, calibrated composition, heap maintenance, networking, and downstream ranking are excluded.  Table~\ref{tab:latency} reports the same measurements as elapsed time, which is easier to relate to search-stage budgets.
 
 \begin{table*}[t]
 \centering
@@ -48,7 +48,7 @@ S_P(x) \ge S_{\mathcal Q}(x),
 \end{equation}
 so the partial score is an upper bound on the final score.  If a top-$k$ heap already has threshold $\tau$ and $S_P(x)\le\tau$, the item cannot recover after evaluating the remaining predicates and may be rejected safely.  This suggests ordering likely-selective predicates first, analogous in spirit to WAND/MaxScore pruning, while preserving the exact score for every survivor.
 
-The repository includes a native \code{sidecar} executor and \code{experiments.sidecar_systems} harness that measure calibrated composition, top-$k$ maintenance, and this early-exit rule separately from the older microkernel.  The harness records CPU model, median and p95 latency, candidate count, predicate count, resident-set size, and the fraction of predicate invocations actually executed.  We do not report those stage-level results here until they are run under the same controlled artifact protocol as the quality benchmark.
+The repository includes a native \code{sidecar} executor and \code{experiments.sidecar\_systems} harness that measure calibrated composition, top-$k$ maintenance, and this early-exit rule separately from the older microkernel.  The harness records CPU model, median and p95 latency, candidate count, predicate count, resident-set size, and the fraction of predicate invocations actually executed.  We do not report those stage-level results here until they are run under the same controlled artifact protocol as the quality benchmark.
 
 \subsection{Open systems questions}
 The next systems questions are therefore concrete rather than rhetorical: (i) mmap/zero-copy loading and direct candidate-array handoff from an ANN engine; (ii) p50/p95/p99 under concurrency and thread scaling; (iii) random versus sorted document-ID locality; (iv) large semantic vocabularies in which active programs are drawn from stores of $10^2$--$10^5$ predicates; (v) update, tombstone, and index-generation semantics; and (vi) end-to-end integration that reports global recall or NDCG together with Eq.~\eqref{eq:latency_decomp}.  The 303$\times$ program-size gap to PQ64 is especially relevant to (iv), but the current eight-concept benchmark does not yet establish a cache-level advantage.
