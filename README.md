@@ -1,131 +1,201 @@
 # Random Semantic Algebra (RSA)
 
-Random Semantic Algebra explores whether expensive semantic supervision can be **compiled into tiny reusable programs over a fixed low-bit item representation** for retrieval and search.
+Random Semantic Algebra studies whether expensive semantic supervision can be
+**compiled offline into tiny reusable search-time programs over a shared low-bit
+item representation**.
 
-## Current result
+The current strongest compact design is **Binary1-LS2-int4**: centered 1-bit
+items, two per-item reconstruction scalars, int4 semantic predicate weights,
+and calibrated composition.
 
-The prototype uses a 384-dimensional semantic representation, one fixed orthogonal random rotation, and 4-bit quantization (**192 bytes/item**). Sparse residual-boosted LUT programs recover much of a full-precision semantic classifier and support calibrated `AND` / `NOT` composition.
+## Current paper result
 
-Mechanism benchmark:
+Main benchmark: 44,072 fashion products, MiniLM title embeddings, independent
+CLIP image semantics, three strict fit/calibration/test splits, and 200 compound
+queries per split.
 
-- FP32 linear classifier: **0.9331 mean F1**
-- all-coordinate 4-bit LUT compilation: **0.9334**
-- sparse 28-unary + 4-pair RSA program: **~0.9015**
-- calibrated 2-way composition: **0.814 F1 / 0.852 AP**
-- calibrated 3-way composition: **~0.747 F1 / 0.780 AP**
+At 20% candidate retention:
 
-Independent-teacher search pilot:
+| Method | Item bytes | Program bytes / concept | Recall | Purity |
+|---|---:|---:|---:|---:|
+| Dense MiniLM | 1536 | 0 | .207 | .425 |
+| RSA2 sparse LUT | 96 | 580 | .321 | .561 |
+| RSA4 sparse LUT | 192 | 3652 | .330 | .571 |
+| **Binary1-LS2-int4** | **56** | **216** | **.337** | **.578** |
+| PQ64 compiled linear | 64 | 65,548 | .352 | .594 |
+| FP32 linear | 1536 | 1548 | .363 | .606 |
 
-- retrieval / item substrate: MiniLM title embeddings
-- latent semantic teacher: CLIP image semantics
-- executor: RSA 4-bit codes + sparse LUT programs
-- query: `minimalist black office shoes not sporty`
+Binary1-LS2-int4 recovers about 83% of the incremental FP32 semantic gain over
+dense retrieval while using a ~303x smaller predicate scoring payload than the
+PQ64 compiled-linear baseline.
 
-At a 40% retained candidate budget, RSA increased teacher-relevant recall from **0.420 -> 0.652** while purity rose from **0.492 -> 0.763**. At a 20% budget, recall improved **0.246 -> 0.333** and purity **0.586 -> 0.793**.
+The Rust microkernel benchmark on real learned rows/programs shows, for a 5k
+candidate pool, about **0.48 ms for one Binary1 predicate and 1.99 ms for eight**
+in the recorded run.  These are semantic-kernel measurements, not end-to-end
+search latency; the CPU model was unfortunately not recorded for that historical
+artifact.
 
-These remain pilot results; the new large-scale harness below is intended to replace the single-query evidence with a multi-query, multi-seed benchmark.
+## Bring your own data
 
-## Research code structure
+RSA is designed as a semantic **sidecar**, not a replacement ANN engine.
+Use any embedding model and keep your existing retrieval/filter stack.
 
-The exact historical implementation remains in `src/rsa_v2.py` so existing numbers are reproducible. New work should use the modular API under `src/ras/`:
+```python
+import numpy as np
+from ras import BinarySemanticIndex
+
+X = np.load("item_embeddings.npy")   # [N, D], your encoder
+index = BinarySemanticIndex.build(
+    "semantic_index",
+    X,
+    projection_kind="identity",
+)
+```
+
+For D=384 the sidecar writes a 56-byte/item serving representation: 48 packed
+sign-bit bytes + two f32 correction values.
+
+## Compile your own semantic predicates
+
+Labels may come from humans, a VLM/LLM teacher, a specialist model, or another
+supervision source.
+
+```python
+from ras import ProgramStore, fit_binary_predicate
+
+y = np.load("office_appropriate.npy")
+program = fit_binary_predicate(index, X, y, name="office_appropriate")
+ProgramStore("semantic_programs").save(program)
+```
+
+Adding a new predicate writes only a new tiny program; it does **not** re-encode
+the catalog.
+
+An existing linear head can also be compiled directly with
+`compile_linear_program(...)`.
+
+## Inference: candidate IDs in, semantic top-k out
+
+Your host search engine performs ANN/lexical retrieval and exact filters, then
+passes integer row IDs to the semantic sidecar:
+
+```python
+from ras import SemanticExecutor
+
+executor = SemanticExecutor.open("semantic_index", "semantic_programs")
+result = executor.topk(
+    candidate_ids,
+    positive=["minimalist", "office_appropriate"],
+    negative=["technical_sporty"],
+    k=1000,
+)
+```
+
+The intended production path is:
+
+```text
+ANN / lexical retrieval
+        -> exact filters
+        -> binary semantic sidecar
+        -> semantic top-k
+        -> expensive neural ranker
+```
+
+See [`docs/SYSTEMS.md`](docs/SYSTEMS.md) for the index format, lifecycle,
+update/versioning model, latency decomposition, early-exit rule, and remaining
+systems work.
+
+## Native Rust sidecar
+
+The portable Python index/program files are directly consumable by the Rust
+executor:
+
+```bash
+cd rust/semantic_engine
+cargo build --release --bin sidecar
+
+./target/release/sidecar \
+  --index ../../semantic_index \
+  --programs ../../semantic_programs \
+  --positive minimalist,office_appropriate \
+  --negative technical_sporty \
+  --candidate-count 5000 \
+  --topk 1000
+```
+
+The native executor fuses calibrated composition with top-k maintenance and uses
+a safe early-termination rule: every additional log-probability term is <= 0, so
+once a partial score falls below the current top-k threshold the item cannot
+recover.
+
+## Systems benchmark
+
+Export the first real held-out split into the portable sidecar format:
+
+```bash
+python -m experiments.export_native_finalists \
+  --config configs/binary_bbq.yaml \
+  --out-dir results/native_finalists_first_seed
+```
+
+Then measure the semantic stage, including composition + top-k + early exit:
+
+```bash
+python -m experiments.sidecar_systems \
+  --index results/native_finalists_first_seed/sidecar_index \
+  --programs results/native_finalists_first_seed/sidecar_programs \
+  --resident-items 500000
+```
+
+The harness records CPU model, Rust version, median/p95 latency, resident-set
+size, candidate count, predicate count, and the fraction of predicate
+invocations actually executed.  It intentionally excludes ANN traversal, exact
+filters, RPC, and downstream ranking.
+
+## Research code
 
 ```text
 src/ras/
-  substrate.py      # random rotation, quantization, geometry
-  predicates.py     # boosted LUTs, LLR factors, pair interactions
-  calibration.py    # scalar calibration
-  composition.py    # calibrated AND / NOT algebra
-  teachers.py       # independent CLIP semantic supervision
-  retrieval.py      # MiniLM retrieval embeddings
-  queries.py        # fit-only compound-query benchmark generation
-  metrics.py        # ranking metrics + bootstrap confidence intervals
-  cache.py          # reusable embedding cache
-  repro.py          # environment + git manifests
-  config.py         # YAML experiment configuration
+  binary.py             # centered binary encoder + int4 primitives
+  semantic_index.py     # portable BYO item index
+  semantic_program.py   # predicate compiler + program store
+  serving.py            # Python candidate-side executor
+  substrate.py          # experimental random low-bit substrates
+  predicates.py         # sparse boosted LUT predicates
+  calibration.py        # scalar calibration
+  composition.py        # calibrated AND / NOT algebra
+  retrieval.py          # MiniLM helpers used by experiments
+  teachers.py           # independent CLIP teacher benchmark
+  queries.py            # fit-only compound-query generation
+
+rust/semantic_engine/src/bin/
+  actual.rs              # real-code finalist microkernel benchmark
+  fair.rs                # synthetic fairness benchmark
+  sidecar.rs             # portable composition + top-k executor
 ```
 
-Paper experiments live separately from the library:
+Useful entry points:
 
-- `experiments/independent_teacher_search.py` - original readable search pilot.
-- `experiments/large_scale_search.py` - paper-grade multi-query / multi-seed benchmark.
-- `configs/smoke.yaml` - quick 8k-product / 20-query validation run.
-- `configs/large_scale.yaml` - full ~44k-product / 600 query-seed benchmark.
-- `tests/test_smoke.py` - synthetic regression/smoke tests.
-- `scripts/reproduce_paper.sh` - mechanism + large-scale reproduction entry point.
+- `examples/byo_semantic_sidecar.py` — minimal bring-your-own-data integration.
+- `experiments/binary_bbq_predicates.py` — quality benchmark.
+- `experiments/export_native_finalists.py` — real native/portable export.
+- `experiments/sidecar_systems.py` — stage-level latency benchmark.
+- `notebooks/rsa_fashion_search_demo_colab.ipynb` — interactive fashion image demo.
 
-## Large-scale paper benchmark
-
-The default large-scale config uses:
-
-- **all ~44k products** in Fashion Product Images Small;
-- **3 strict seeds** (`7, 17, 27`);
-- **200 compound queries per seed** generated using fit data only;
-- a **5,000-candidate ANN pool** before exact filtering and semantic pruning;
-- MiniLM title embeddings for retrieval;
-- CLIP image semantics as an independent latent teacher;
-- RSA vs dense-only vs a full-precision linear semantic proxy vs an oracle upper bound;
-- retention budgets from 100% down to 5%;
-- bootstrap confidence intervals and paired deltas versus dense retrieval.
-
-Expensive MiniLM/CLIP embeddings are cached and reused across seeds.
-
-```bash
-pip install -e .
-
-# Validate the full pipeline first
-python -m experiments.large_scale_search --config configs/smoke.yaml
-
-# Paper-scale run
-python -m experiments.large_scale_search --config configs/large_scale.yaml
-```
-
-Each run writes an immutable result directory containing:
-
-```text
-results/<run_id>/
-  config.yaml
-  environment.json
-  headline.json
-  predicate_metrics.csv
-  queries.csv
-  per_query.csv
-  summary.csv
-  paired_deltas.csv
-  figures/
-```
-
-## Core idea
-
-```text
-expensive semantic supervision
-          |
-          v  offline
-compile reusable predicates
-          |
-          v
-fixed 192-byte/item RSA code
-          |
-          v  online
-ANN candidates -> semantic program -> cheap pruning -> expensive ranker
-```
-
-## Quick start
+## Reproduction
 
 ```bash
 pip install -e .
 pytest -q
 
-# Original mechanism experiment
-python src/random_semantic_algebra_full.py
+# Paper-scale quality benchmark
+python -m experiments.binary_bbq_predicates --config configs/binary_bbq.yaml
 
-# Original independent-teacher pilot
-python -m experiments.independent_teacher_search
+# Export real native assets and portable sidecar
+python -m experiments.export_native_finalists --config configs/binary_bbq.yaml
 
-# New paper-scale benchmark
-python -m experiments.large_scale_search --config configs/large_scale.yaml
-
-# Full experiment suite
-bash scripts/reproduce_paper.sh
+# Rust tests
+cargo test --release --manifest-path rust/semantic_engine/Cargo.toml
 
 # ICML-style paper
 cd paper/icml
@@ -133,14 +203,18 @@ pdflatex main.tex
 pdflatex main.tex
 ```
 
-A GPU is recommended for CLIP image embedding. RSA predicate compilation and online LUT scoring are lightweight compared with the teacher stage.
-
 ## Paper
 
-- `paper/Random_Semantic_Algebra.md` - long-form source.
-- `paper/icml/main.tex` - professional two-column ICML-style manuscript with equations, pseudocode algorithms, TikZ/PGFPlots figures, tables, impact statement, references, and appendix.
-- `paper/icml/README.md` - build instructions.
+The conference-style manuscript is under [`paper/icml`](paper/icml).  The latest
+version includes the Binary1/PQ/RSA2/RSA4 comparison, real native throughput,
+explicit microkernel latency, a bring-your-own systems interface, joint item +
+predicate memory accounting, and a clear separation between kernel latency and
+end-to-end search latency.
 
 ## Research status
 
-The codebase now supports the next evidence step: a **large multi-query, multi-seed independent-teacher benchmark** with strong proxy/oracle baselines and confidence intervals. Still missing for a mature submission are a second dataset/domain, direct composition ceilings at larger scale, and measured packed CPU/SIMD latency.
+The strongest supported thesis is now **compiled semantic predicate execution**,
+not randomness or four-bit LUTs by themselves.  The next evidence step is a
+fully instrumented search-stage benchmark with p50/p95/p99 latency and CPU
+metadata, followed by a real ANN/filter integration and a large semantic
+vocabulary cache experiment.
