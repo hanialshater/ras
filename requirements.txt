@@ -8,3 +8,5 @@ torch
 pillow
 matplotlib
 pyarrow
+PyYAML
+pytest
