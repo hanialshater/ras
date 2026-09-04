@@ -1,3 +1,4 @@
+
 \begin{thebibliography}{99}
 
 \bibitem[J{\'e}gou et~al.(2011)J{\'e}gou, Douze, and Schmid]{jegou2011pq}
@@ -46,15 +47,34 @@ Ashraq. Fashion Product Images Small. Hugging Face Datasets, accessed 2026.
 
 \appendix
 \section{Additional Experimental Detail}
+
 \subsection{Original geometry sanity check}
-The original mechanism run measured correlation 0.9102 between source cosine similarity and 1-bit Hamming agreement, and 0.9761 between source cosine and a 4-bit negative-$\ell_1$ surrogate over random held-out pairs. These values motivate the low-bit substrate but are not ANN recall guarantees.
+The original mechanism run measured correlation 0.9102 between source cosine similarity and 1-bit Hamming agreement, and 0.9761 between source cosine and a 4-bit negative-$\ell_1$ surrogate over random held-out pairs. These values motivated the first low-bit substrate experiments but are not ANN recall guarantees and are not evidence that random rotation is necessary.
 
 \subsection{Storage accounting}
-For $D=384$, source FP32 embeddings require 1,536 bytes/item. A packed 4-bit substrate requires 192 bytes/item and a packed 1-bit substrate 48 bytes/item. Current NumPy prototypes store codes in \code{uint8}; all storage claims in the paper refer to the packed systems representation. A unary semantic program with 24 active coordinates and 16 int8 values per coordinate requires 384 table bytes plus coordinate identifiers and an intercept; the main benchmark adds two $16\times16$ pair tables.
+For $D=384$, source FP32 embeddings require 1,536 bytes/item. The final benchmark uses the following packed accounting:
+\begin{center}
+\small
+\begin{tabular}{lrr}
+\toprule
+Method & Item B & Program B/concept\\
+\midrule
+FP32 linear & 1536 & 1548\\
+PQ64 compiled linear & 64 & 65548\\
+Binary1-LS2-int4 & 56 & 216\\
+Binary1-LS2-FP32 & 56 & 1556\\
+RSA1 sparse & 48 & 292\\
+RSA2 sparse & 96 & 580\\
+RSA4 sparse & 192 & 3652\\
+\bottomrule
+\end{tabular}
+\end{center}
+Binary1 stores 48 bytes of sign bits plus two FP32 reconstruction levels. Its int4 predicate stores 192 bytes of packed weights plus quantization/precomputed scalar state. PQ64 stores 64 one-byte subcodes per item; its predicate stores $64\times256$ FP32 table values plus scalar state. Sparse \rsa program sizes count FP32 LUT values, unsigned 16-bit coordinate indices, intercept, and scalar calibration parameters. These numbers intentionally exclude generic container and allocator overhead.
 
-\subsection{Mechanism ablations}
-The selected ablations reported in the main text are reproduced by the mechanism experiment in the repository; full per-concept and per-configuration outputs are emitted as CSV artifacts.
+\subsection{Binary execution identity}
+For the int4 binary program, the native kernel uses six 64-bit words per item and four predicate bit planes. The weighted positive-side sum is obtained from four AND/popcount reductions as in Eq.~\eqref{eq:popcount}; the two per-item reconstruction levels then recover the approximate linear score through Eq.~\eqref{eq:binary_score}. This is the kernel benchmarked by the Rust \code{actual} executor.
 
 \subsection{Reproducibility}
-The main benchmark is produced by \path{experiments/large_scale_search.py} with \path{configs/large_scale.yaml}. The reported run contains all 44,072 products, seeds 7/17/27, a top-5,000 retrieval pool, 200 fit-generated compound queries per seed, 24 unary and two pair LUTs per concept, and 2,000 bootstrap resamples. The result bundle is \texttt{20260904T100524Z\_8204ed57bf} at Git commit \texttt{fea235e}. It was executed on an NVIDIA A100-SXM4-40GB. Each run writes the configuration, environment manifest, predicate metrics, query definitions, per-query rows, aggregate summaries, paired deltas, and figures. The repository also contains a public Colab launcher for smoke and full reproduction.
+The final quality comparison is produced by \path{experiments/binary_bbq_predicates.py} with \path{configs/binary_bbq.yaml}. The reported result bundle is \texttt{20260904T125016Z\_binary\_3ad715855d}, generated at Git commit \texttt{2b0f5ede8ad9b9e567b35260cbbc23d90dee4e89}. It contains all 44,072 products, seeds 7/17/27, a top-5,000 retrieval pool, 200 fit-generated compound queries per seed, and the full per-query, predicate, paired-delta, and Pareto outputs. The quality run reports an NVIDIA A100-SXM4-40GB for embedding/teacher computation.
 
+The same run exports first-seed real held-out representations and learned programs. \path{experiments/export_native_finalists.py} converts them to raw binary assets, and \path{rust/semantic_engine/src/bin/actual.rs} benchmarks FP32, PQ64, Binary1-LS2-int4, and RSA2 on a single CPU thread. The source test set has 15,426 items; rows are physically repeated only to construct the 500k-item resident working set. Candidate sets contain 5k, 20k, or 100k sampled resident indices, predicate counts are 1/2/4/8, and reported timings are medians of five repetitions. The public Colab launcher is \path{notebooks/rsa_finalists_full_native_colab.ipynb}.
