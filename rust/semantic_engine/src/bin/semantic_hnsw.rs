@@ -84,6 +84,7 @@ fn args() -> Args {
         i += 1;
     }
     assert!(!a.positive.is_empty() || !a.negative.is_empty(), "at least one predicate required");
+    assert!(a.ef >= a.k, "--ef must be at least --k");
     a
 }
 
@@ -223,7 +224,9 @@ struct Graph {
 
 fn extract_graph(hnsw: &Hnsw<'_, f32, DistCosine>, n: usize) -> Graph {
     let max_level = hnsw.get_max_level_observed() as usize;
-    let mut neigh = (0..n).map(|_| (0..=max_level).map(|_| Vec::<usize>::new()).collect()).collect::<Vec<Vec<Vec<usize>>>>();
+    let mut neigh = (0..n)
+        .map(|_| (0..=max_level).map(|_| Vec::<usize>::new()).collect())
+        .collect::<Vec<Vec<Vec<usize>>>>();
     let mut level = vec![0usize; n];
     for p in hnsw.get_point_indexation().into_iter() {
         let id = p.get_origin_id();
@@ -234,6 +237,9 @@ fn extract_graph(hnsw: &Hnsw<'_, f32, DistCosine>, n: usize) -> Graph {
             neigh[id][l] = h[l].iter().map(|x| x.d_id).collect();
         }
     }
+    // hnsw_rs does not expose its internal entry point.  The entry point is the
+    // first point that reached the observed maximum level, which is also the
+    // first element of that layer under the library's insertion/indexation.
     let entry = hnsw
         .get_point_indexation()
         .get_layer_iterator(max_level)
@@ -291,12 +297,18 @@ struct SemanticSearchResult {
     bridge_candidates: usize,
 }
 
+/// HNSW-like layer-0 beam search with optional semantic steering.
+///
+/// The key invariant is that `ef` is a beam width, not a hard expansion cap.
+/// With `lambda == 0` and `bridge_hops == 0`, candidate admission and stopping
+/// reduce to standard dense HNSW layer search on the extracted graph. Semantic
+/// gating is applied only to the final beam in that parity mode.
 fn semantic_search_c(
     graph: &Graph,
     items: &[f32],
-    sidecar: &Sidecar,
     sem: &[f32],
     query: &[f32],
+    skip: usize,
     k: usize,
     ef: usize,
     lambda: f32,
@@ -307,55 +319,101 @@ fn semantic_search_c(
     let start = dense_entry_descent(graph, items, query);
     let n = graph.neigh.len();
     let mut seen = vec![false; n];
-    let mut frontier = BinaryHeap::<ScoreNode>::new();
-    let mut results = BinaryHeap::<Reverse<ScoreNode>>::new();
-    let mut semantic_evals = 0usize;
-    let mut bridge_candidates = 0usize;
+    let mut semantic_used = vec![false; n];
 
-    let start_dense = dot(items, start, query);
-    frontier.push(ScoreNode { score: start_dense + lambda * sem[start], id: start });
-    seen[start] = true;
+    // candidates: best navigation score first.
+    let mut candidates = BinaryHeap::<ScoreNode>::new();
+    // beam: worst of the current best ef navigation scores at peek().
+    let mut beam = BinaryHeap::<Reverse<ScoreNode>>::new();
+    let mut bridge_candidates = 0usize;
     let mut expanded = 0usize;
 
-    while let Some(c) = frontier.pop() {
-        if expanded >= ef { break; }
+    let start_dense = dot(items, start, query);
+    let start_priority = if lambda == 0.0 {
+        start_dense
+    } else {
+        semantic_used[start] = true;
+        start_dense + lambda * sem[start]
+    };
+    let start_node = ScoreNode { score: start_priority, id: start };
+    candidates.push(start_node);
+    beam.push(Reverse(start_node));
+    seen[start] = true;
+
+    while let Some(c) = candidates.pop() {
+        // Standard HNSW stopping rule in similarity form: if the best remaining
+        // candidate cannot improve the current ef-beam, exploration is done.
+        if beam.len() >= ef {
+            let worst = beam.peek().unwrap().0.score;
+            if c.score < worst { break; }
+        }
+
         expanded += 1;
         let id = c.id;
-        let dense_s = dot(items, id, query);
-        semantic_evals += 1;
-        let passes = sem[id] >= gate;
-        if passes { push_topk(&mut results, k, id, dense_s); }
+        let passes = if bridge_hops > 0 {
+            semantic_used[id] = true;
+            sem[id] >= gate
+        } else {
+            true
+        };
 
-        // Variant C: semantic score changes the expansion order.  If the node
-        // fails the latent semantic gate, it is treated as a bridge rather than
-        // a result.  We still traverse through it, and optionally inspect a
-        // bounded two-hop neighbourhood to reduce graph disconnection.
-        let mut candidates = Vec::<usize>::new();
-        candidates.extend(graph.neigh[id][0].iter().copied());
-        if !passes && bridge_hops >= 2 {
+        let mut neigh = Vec::<usize>::with_capacity(graph.neigh[id][0].len() + bridge_cap);
+        neigh.extend(graph.neigh[id][0].iter().copied());
+
+        // ACORN-like bridge expansion: failed semantic nodes remain traversable
+        // and can contribute a bounded number of two-hop candidates.
+        if !passes && bridge_hops >= 2 && bridge_cap > 0 {
+            let mut added = 0usize;
             'outer: for &nb in &graph.neigh[id][0] {
                 for &nn in &graph.neigh[nb][0] {
-                    candidates.push(nn);
+                    neigh.push(nn);
                     bridge_candidates += 1;
-                    if bridge_candidates >= bridge_cap * ef { break 'outer; }
-                    if candidates.len() >= bridge_cap { break 'outer; }
+                    added += 1;
+                    if added >= bridge_cap { break 'outer; }
                 }
             }
         }
 
-        for nb in candidates {
+        for nb in neigh {
             if nb >= n || seen[nb] { continue; }
+            // HNSW marks a point visited on first discovery even if it is not
+            // admitted to the beam.
             seen[nb] = true;
             let ds = dot(items, nb, query);
-            let priority = ds + lambda * sem[nb];
-            frontier.push(ScoreNode { score: priority, id: nb });
+            let priority = if lambda == 0.0 {
+                ds
+            } else {
+                semantic_used[nb] = true;
+                ds + lambda * sem[nb]
+            };
+
+            let admit = beam.len() < ef || priority > beam.peek().unwrap().0.score;
+            if admit {
+                let node = ScoreNode { score: priority, id: nb };
+                candidates.push(node);
+                beam.push(Reverse(node));
+                if beam.len() > ef { beam.pop(); }
+            }
+        }
+    }
+
+    // Return the top-k dense neighbours among semantically valid points in the
+    // final navigation beam.  This keeps lambda=0 comparable to ordinary HNSW
+    // followed by the same semantic gate, while lambda>0 can reshape the beam.
+    let mut results = BinaryHeap::<Reverse<ScoreNode>>::new();
+    for x in beam.into_iter() {
+        let id = x.0.id;
+        if id == skip { continue; }
+        semantic_used[id] = true;
+        if sem[id] >= gate {
+            push_topk(&mut results, k, id, dot(items, id, query));
         }
     }
 
     SemanticSearchResult {
         ids: heap_ids(results),
         visited: expanded,
-        semantic_evals,
+        semantic_evals: semantic_used.iter().filter(|&&x| x).count(),
         bridge_candidates,
     }
 }
@@ -413,9 +471,11 @@ fn main() {
     let qn = a.queries.min(n);
     let mut sum_post_recall = 0.0;
     let mut sum_filter_recall = 0.0;
+    let mut sum_parity_recall = 0.0;
     let mut sum_c_recall = 0.0;
     let mut sum_post_ms = 0.0;
     let mut sum_filter_ms = 0.0;
+    let mut sum_parity_ms = 0.0;
     let mut sum_c_ms = 0.0;
 
     for qi in 0..qn {
@@ -438,8 +498,8 @@ fn main() {
         let post_r = recall_at_k(&post, &truth);
         writeln!(out, "{qi},hnsw_postfilter,{post_ms:.6},{post_r:.6},{},0,0,0,{:.6}", post.len(), qualified as f64 / n as f64).unwrap();
 
-        // Baseline 2: hnsw_rs filtered traversal.  Invalid points are still
-        // traversable but never enter the result heap.
+        // Baseline 2: hnsw_rs filtered traversal. Invalid points are traversable
+        // but cannot enter the result set.
         let predicate = |id: &usize| *id != qid && sem[*id] >= a.gate_logprob;
         let t = Instant::now();
         let filtered = hnsw.search_filter(query, a.k, a.ef.max(a.k), Some(&predicate));
@@ -448,24 +508,37 @@ fn main() {
         let filter_r = recall_at_k(&filtered_ids, &truth);
         writeln!(out, "{qi},hnsw_filtered,{filter_ms:.6},{filter_r:.6},{},0,0,0,{:.6}", filtered_ids.len(), qualified as f64 / n as f64).unwrap();
 
-        // Variant C: semantic-prioritized expansion with ACORN-like bridge hops.
+        // Diagnostic parity baseline: our extracted-graph beam search with no
+        // semantic steering and no bridge expansion. This must approach normal
+        // HNSW quality before we interpret Variant C.
+        let t = Instant::now();
+        let parity = semantic_search_c(
+            &graph, &items, &sem, query, qid, a.k, a.ef,
+            0.0, a.gate_logprob, 0, 0,
+        );
+        let parity_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let parity_r = recall_at_k(&parity.ids, &truth);
+        writeln!(out, "{qi},custom_hnsw_lambda0,{parity_ms:.6},{parity_r:.6},{},{},{},{},{:.6}", parity.ids.len(), parity.visited, parity.semantic_evals, parity.bridge_candidates, qualified as f64 / n as f64).unwrap();
+
+        // Variant C: semantic-prioritized HNSW beam with ACORN-like bridges.
         let t = Instant::now();
         let c = semantic_search_c(
-            &graph, &items, &sidecar, &sem, query, a.k, a.ef,
+            &graph, &items, &sem, query, qid, a.k, a.ef,
             a.semantic_lambda, a.gate_logprob, a.bridge_hops, a.bridge_cap,
         );
         let c_ms = t.elapsed().as_secs_f64() * 1000.0;
         let c_r = recall_at_k(&c.ids, &truth);
         writeln!(out, "{qi},semantic_hnsw_c,{c_ms:.6},{c_r:.6},{},{},{},{},{:.6}", c.ids.len(), c.visited, c.semantic_evals, c.bridge_candidates, qualified as f64 / n as f64).unwrap();
 
-        sum_post_recall += post_r; sum_filter_recall += filter_r; sum_c_recall += c_r;
-        sum_post_ms += post_ms; sum_filter_ms += filter_ms; sum_c_ms += c_ms;
+        sum_post_recall += post_r; sum_filter_recall += filter_r; sum_parity_recall += parity_r; sum_c_recall += c_r;
+        sum_post_ms += post_ms; sum_filter_ms += filter_ms; sum_parity_ms += parity_ms; sum_c_ms += c_ms;
     }
 
     let q = qn as f64;
-    println!("mean hnsw_postfilter latency_ms={:.4} recall@{}={:.4}", sum_post_ms/q, a.k, sum_post_recall/q);
-    println!("mean hnsw_filtered   latency_ms={:.4} recall@{}={:.4}", sum_filter_ms/q, a.k, sum_filter_recall/q);
-    println!("mean semantic_hnsw_c latency_ms={:.4} recall@{}={:.4}", sum_c_ms/q, a.k, sum_c_recall/q);
+    println!("mean hnsw_postfilter      latency_ms={:.4} recall@{}={:.4}", sum_post_ms/q, a.k, sum_post_recall/q);
+    println!("mean hnsw_filtered        latency_ms={:.4} recall@{}={:.4}", sum_filter_ms/q, a.k, sum_filter_recall/q);
+    println!("mean custom_hnsw_lambda0 latency_ms={:.4} recall@{}={:.4}", sum_parity_ms/q, a.k, sum_parity_recall/q);
+    println!("mean semantic_hnsw_c      latency_ms={:.4} recall@{}={:.4}", sum_c_ms/q, a.k, sum_c_recall/q);
     println!("results={}", a.out.display());
 }
 
@@ -490,5 +563,28 @@ mod tests {
         assert!(ids.contains(&2));
         assert!(ids.contains(&3));
         assert!(!ids.contains(&1));
+    }
+
+    #[test]
+    fn ef_is_beam_width_not_expansion_cap_and_skip_is_honored() {
+        let n = 6usize;
+        let mut items = vec![0.0f32; n * D];
+        for i in 0..n { items[i * D] = i as f32; }
+        let mut neigh = (0..n).map(|_| vec![Vec::<usize>::new()]).collect::<Vec<_>>();
+        for i in 0..n {
+            if i > 0 { neigh[i][0].push(i - 1); }
+            if i + 1 < n { neigh[i][0].push(i + 1); }
+        }
+        let graph = Graph { neigh, level: vec![0; n], max_level: 0, entry: 0 };
+        let sem = vec![0.0f32; n];
+        let mut query = vec![0.0f32; D];
+        query[0] = 1.0;
+
+        let r = semantic_search_c(&graph, &items, &sem, &query, usize::MAX, 1, 2, 0.0, -1.0, 0, 0);
+        assert!(r.visited > 2, "ef must not be treated as a hard expansion cap");
+        assert_eq!(r.ids, vec![5]);
+
+        let r_skip = semantic_search_c(&graph, &items, &sem, &query, 5, 1, 2, 0.0, -1.0, 0, 0);
+        assert_eq!(r_skip.ids, vec![4]);
     }
 }
