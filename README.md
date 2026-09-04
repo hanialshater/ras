@@ -48,7 +48,8 @@ Paper experiments live separately from the library:
 
 - `experiments/independent_teacher_search.py` - original readable search pilot.
 - `experiments/large_scale_search.py` - paper-grade multi-query / multi-seed benchmark.
-- `configs/large_scale.yaml` - default large-scale experiment configuration.
+- `configs/smoke.yaml` - quick 8k-product / 20-query validation run.
+- `configs/large_scale.yaml` - full ~44k-product / 600 query-seed benchmark.
 - `tests/test_smoke.py` - synthetic regression/smoke tests.
 - `scripts/reproduce_paper.sh` - mechanism + large-scale reproduction entry point.
 
@@ -59,6 +60,7 @@ The default large-scale config uses:
 - **all ~44k products** in Fashion Product Images Small;
 - **3 strict seeds** (`7, 17, 27`);
 - **200 compound queries per seed** generated using fit data only;
+- a **5,000-candidate ANN pool** before exact filtering and semantic pruning;
 - MiniLM title embeddings for retrieval;
 - CLIP image semantics as an independent latent teacher;
 - RSA vs dense-only vs a full-precision linear semantic proxy vs an oracle upper bound;
@@ -69,6 +71,11 @@ Expensive MiniLM/CLIP embeddings are cached and reused across seeds.
 
 ```bash
 pip install -e .
+
+# Validate the full pipeline first
+python -m experiments.large_scale_search --config configs/smoke.yaml
+
+# Paper-scale run
 python -m experiments.large_scale_search --config configs/large_scale.yaml
 ```
 
@@ -114,11 +121,11 @@ python src/random_semantic_algebra_full.py
 # Original independent-teacher pilot
 python -m experiments.independent_teacher_search
 
-# New multi-query / multi-seed benchmark
+# New paper-scale benchmark
 python -m experiments.large_scale_search --config configs/large_scale.yaml
 
 # Full experiment suite
-./scripts/reproduce_paper.sh
+bash scripts/reproduce_paper.sh
 
 # ICML-style paper
 cd paper/icml
