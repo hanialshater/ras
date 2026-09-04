@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "random-semantic-algebra"
+version = "0.1.0"
+description = "Research code for Random Semantic Algebra"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "datasets",
+  "sentence-transformers",
+  "transformers",
+  "torch",
+  "Pillow",
+  "matplotlib",
+  "PyYAML",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["rsa_v2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
