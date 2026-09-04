@@ -13,6 +13,7 @@ struct Args {
     negative: Vec<String>,
     candidates_file: Option<PathBuf>,
     candidate_count: usize,
+    resident_items: Option<usize>,
     topk: usize,
     repeats: usize,
     early_exit: bool,
@@ -32,6 +33,7 @@ fn args() -> Args {
         negative: Vec::new(),
         candidates_file: None,
         candidate_count: 5_000,
+        resident_items: None,
         topk: 500,
         repeats: 7,
         early_exit: true,
@@ -45,11 +47,12 @@ fn args() -> Args {
             "--negative" => { i += 1; a.negative = parse_list(&xs[i]); }
             "--candidates" => { i += 1; a.candidates_file = Some(PathBuf::from(&xs[i])); }
             "--candidate-count" => { i += 1; a.candidate_count = xs[i].parse().unwrap(); }
+            "--resident-items" => { i += 1; a.resident_items = Some(xs[i].parse().unwrap()); }
             "--topk" => { i += 1; a.topk = xs[i].parse().unwrap(); }
             "--repeats" => { i += 1; a.repeats = xs[i].parse().unwrap(); }
             "--no-early-exit" => { a.early_exit = false; }
             "--help" | "-h" => {
-                println!("sidecar --index DIR --programs DIR --positive a,b --negative c [--candidates ids.u32 | --candidate-count N] --topk K --repeats N [--no-early-exit]");
+                println!("sidecar --index DIR --programs DIR --positive a,b --negative c [--candidates ids.u32 | --candidate-count N] [--resident-items N] --topk K --repeats N [--no-early-exit]");
                 std::process::exit(0);
             }
             _ => panic!("unknown argument {}", xs[i]),
@@ -116,16 +119,33 @@ struct Index {
     bits: Vec<u8>,
     corrections: Vec<f32>,
     packed_bytes: usize,
+    source_items: usize,
     n_items: usize,
 }
 
-fn load_index(root: &Path, packed_bytes: usize) -> Index {
-    let bits = fs::read(root.join("bits.u8")).unwrap();
-    assert_eq!(bits.len() % packed_bytes, 0);
-    let n_items = bits.len() / packed_bytes;
-    let corrections = read_f32(root.join("corrections.f32"));
-    assert_eq!(corrections.len(), n_items * 2);
-    Index { bits, corrections, packed_bytes, n_items }
+fn tile_rows<T: Copy>(src: &[T], row: usize, n: usize) -> Vec<T> {
+    assert_eq!(src.len() % row, 0);
+    let source_n = src.len() / row;
+    assert!(source_n > 0);
+    if n == source_n { return src.to_vec(); }
+    let mut out = Vec::with_capacity(n * row);
+    for i in 0..n {
+        let s = (i % source_n) * row;
+        out.extend_from_slice(&src[s..s + row]);
+    }
+    out
+}
+
+fn load_index(root: &Path, packed_bytes: usize, resident_items: Option<usize>) -> Index {
+    let source_bits = fs::read(root.join("bits.u8")).unwrap();
+    assert_eq!(source_bits.len() % packed_bytes, 0);
+    let source_items = source_bits.len() / packed_bytes;
+    let source_corrections = read_f32(root.join("corrections.f32"));
+    assert_eq!(source_corrections.len(), source_items * 2);
+    let n_items = resident_items.unwrap_or(source_items).max(1);
+    let bits = tile_rows(&source_bits, packed_bytes, n_items);
+    let corrections = tile_rows(&source_corrections, 2, n_items);
+    Index { bits, corrections, packed_bytes, source_items, n_items }
 }
 
 #[inline(always)]
@@ -218,7 +238,7 @@ fn execute(index: &Index, refs: &[PredRef], candidates: &[u32], topk: usize, ear
             if early_exit && heap.len() == k && k > 0 {
                 let threshold = heap.peek().unwrap().0.score;
                 // Every remaining log-probability term is <= 0, so partial is
-                // an upper bound on the final score.  Once it falls below the
+                // an upper bound on the final score. Once it falls below the
                 // top-k threshold the item cannot recover.
                 if partial <= threshold {
                     rejected = true;
@@ -266,23 +286,24 @@ fn main() {
     let packed = refs[0].program.packed_bytes;
     for r in &refs { assert_eq!(r.program.packed_bytes, packed, "program dimensions differ"); }
     refs.sort_by(|a, b| a.expected_acceptance().total_cmp(&b.expected_acceptance()));
-    let index = load_index(&a.index, packed);
+    let index = load_index(&a.index, packed, a.resident_items);
 
     let candidates: Vec<u32> = match &a.candidates_file {
         Some(p) => read_u32(p),
-        None => random_candidates(index.n_items, a.candidate_count.min(index.n_items.max(1))),
+        None => random_candidates(index.n_items, a.candidate_count.min(index.n_items)),
     };
     for &id in &candidates { assert!((id as usize) < index.n_items, "candidate ID out of range"); }
 
+    println!("source_items={}", index.source_items);
     println!("index_items={}", index.n_items);
     println!("item_bytes={}", index.packed_bytes + 8);
+    println!("resident_mb={:.3}", index.n_items as f64 * (index.packed_bytes + 8) as f64 / 1e6);
     println!("candidates={}", candidates.len());
     println!("predicates={}", refs.len());
     println!("topk={}", a.topk.min(candidates.len()));
     println!("early_exit={}", a.early_exit);
     println!("plan={}", refs.iter().map(|r| format!("{}{}", if r.positive { "+" } else { "-" }, r.program.name)).collect::<Vec<_>>().join(","));
 
-    // Warm once before timing.
     let _ = execute(&index, &refs, &candidates, a.topk, a.early_exit);
     let mut runs = Vec::new();
     let mut last: Option<RunResult> = None;
@@ -326,5 +347,11 @@ mod tests {
         h.push(Reverse(HeapEntry { score: -1.0, row: 1 }));
         h.push(Reverse(HeapEntry { score: -3.0, row: 2 }));
         assert_eq!(h.peek().unwrap().0.row, 2);
+    }
+
+    #[test]
+    fn tiling_repeats_real_rows() {
+        let x = vec![1u8, 2, 3, 4];
+        assert_eq!(tile_rows(&x, 2, 3), vec![1, 2, 3, 4, 1, 2]);
     }
 }
