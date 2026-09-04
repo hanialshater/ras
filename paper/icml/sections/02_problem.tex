@@ -1,5 +1,12 @@
+
 \section{Problem Setting}
 Let $x\in\R^D$ be a normalized item embedding and $q$ a query embedding. Dense retrieval scores $q^\top x$. Exact predicates, denoted $E(x)$, are stored catalog facts and should remain conventional filters. A \emph{latent predicate} $C$ is a binary semantic judgment supplied by a teacher $T_C(x)\in\{0,1\}$, where the teacher may be a VLM, human annotation process, or specialized model.
 
-The target is a compiler that maps labeled examples into a cheap executable object $F_C$, while keeping the item representation fixed across concepts. We seek: (i) no catalog re-encoding when adding a concept; (ii) low per-item storage; (iii) tens rather than hundreds of arithmetic operations per concept; and (iv) composition of independently learned concepts without conjunction-specific training.
+A semantic compiler chooses a concept-independent item representation $\phi(x)$ and maps labeled examples for concept $C$ into an executable program $F_C$. If a catalog contains $N$ items and serves $K$ compiled concepts, let $B_i$ denote bytes per item and $B_p$ bytes per predicate program. The static memory attributable to semantic execution is
+\begin{equation}
+    M(N,K)=N B_i + K B_p .
+    \label{eq:joint_memory}
+\end{equation}
+This distinguishes conventional vector compression, which primarily minimizes $B_i$, from \emph{joint item--program compression}. A representation with a slightly different item code can become preferable when it makes each additional semantic program much smaller.
 
+The target is therefore not only reconstruction fidelity. We seek: (i) no catalog re-encoding when adding a concept; (ii) low $B_i$; (iii) low $B_p$ as the semantic vocabulary grows; (iv) fast execution when several predicates are active simultaneously; and (v) composition of independently learned predicates without conjunction-specific training. Search quality is evaluated at a fixed downstream candidate budget, because the intended role is candidate pruning rather than replacing the first-stage ANN index.
