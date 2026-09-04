@@ -1,7 +1,10 @@
-"""Compatibility bridge to the exact RSA v2 research snapshot.
+"""Compatibility namespace for the refactored research package.
 
-New experiments should import from the focused modules in :mod:`ras` rather than
-from this module directly. The legacy `rsa_v2.py` snapshot is kept byte-exact so
-published numbers remain reproducible while the public API is refactored.
+Paper experiments should import focused modules such as :mod:`ras.substrate`,
+:mod:`ras.predicates`, and :mod:`ras.composition`. The exact historical v2
+snapshot remains available as top-level module :mod:`rsa_v2` for reproducing
+legacy tables, but new code does not depend on it.
 """
-from rsa_v2 import *  # noqa: F401,F403
+from .splits import ProtocolSplit, make_protocol_split
+
+__all__ = ["ProtocolSplit", "make_protocol_split"]
