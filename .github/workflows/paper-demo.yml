@@ -1,0 +1,46 @@
+name: paper-and-demo
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LaTeX toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            texlive-latex-base texlive-latex-extra texlive-science \
+            texlive-pictures texlive-fonts-recommended
+      - name: Build manuscript twice
+        working-directory: paper/icml
+        run: |
+          pdflatex -interaction=nonstopmode -halt-on-error main.tex
+          pdflatex -interaction=nonstopmode -halt-on-error main.tex
+          test -s main.pdf
+          echo "paper_pages=$(pdfinfo main.pdf | awk '/^Pages:/ {print $2}')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rsa-paper-pdf
+          path: paper/icml/main.pdf
+
+  demo-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install demo dependencies
+        run: pip install -e '.[dev,demo]'
+      - name: Validate demo sources and notebook JSON
+        run: |
+          python -m compileall -q demos src
+          python -m json.tool notebooks/rsa_fashion_search_demo_colab.ipynb >/dev/null
+      - name: Run demo smoke tests
+        run: pytest -q tests/test_demo_smoke.py
