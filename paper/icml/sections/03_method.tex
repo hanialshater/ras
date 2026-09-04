@@ -1,89 +1,130 @@
-\section{Random Semantic Algebra}
-\subsection{Fixed random 4-bit substrate}
-Sample a Gaussian matrix and take its orthogonal factor $R\in\R^{D\times D}$. For every item,
-\begin{equation}
-    z = xR, \qquad q_j = Q_j(z_j)\in\{0,\ldots,15\}.
-\end{equation}
-Before quantization, orthogonality preserves inner products and Euclidean distances exactly. The prototype learns per-coordinate quantization boundaries on the fit set. For $D=384$, a packed code costs $384\times4/8=192$ bytes/item, versus 1,536 bytes for FP32. This use of randomized low-bit geometry is inspired by work such as random-hyperplane hashing and RaBitQ \citep{charikar2002simhash,gao2024rabitq}; unlike those methods, our target is predicate execution rather than only distance estimation.
 
-\subsection{Sparse predicate programs}
-A concept $C$ is represented as
+\section{Low-Bit Semantic Predicate Compilation}
+
+\subsection{Shared low-bit substrates}
+The original \rsa family starts from a normalized search-side embedding $x\in\R^D$, samples a Gaussian matrix, and takes its orthogonal factor $R\in\R^{D\times D}$. For each item,
+\begin{equation}
+    z=xR,\qquad q_j=Q_j(z_j)\in\{0,\ldots,2^b-1\},
+    \label{eq:rsa_substrate}
+\end{equation}
+where $b\in\{1,2,4\}$ and the per-coordinate quantization boundaries are learned from fit data. Orthogonality preserves inner products before quantization. For $D=384$, packed item storage is 48, 96, and 192 bytes for $b=1,2,4$ respectively. We use random orthogonal rotation for the multi-bit \rsa variants and also test identity versus random rotation for the centered 1-bit sparse model.
+
+\subsection{Sparse boosted LUT programs}
+A concept $C$ can be compiled into a budgeted discrete additive model
 \begin{equation}
 F_C(q)=b_C+\sum_{j\in J_C} f_{Cj}(q_j)
 +\sum_{(j,k)\in P_C} g_{Cjk}(q_j,q_k),
 \label{eq:program}
 \end{equation}
-where each unary $f_{Cj}$ is a 16-entry table and each optional pair term $g_{Cjk}$ is a $16\times16$ table. This is a discrete, budgeted analogue of a generalized additive model with selected interactions \citep{lou2013ga2m,nori2019interpretml}. Serving cost is dominated by coordinate reads, table lookups, and additions.
+where each unary $f_{Cj}$ has $2^b$ entries and each optional pair term $g_{Cjk}$ has $2^{2b}$ entries. This is a discrete analogue of a generalized additive model with selected interactions \citep{lou2013ga2m,nori2019interpretml}.
 
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}[node distance=5mm, >=Latex, every node/.style={font=\scriptsize}]
-\tikzstyle{b}=[draw, rounded corners=2pt, align=center, minimum height=6mm, minimum width=20mm]
-\node[b] (q) {4-bit item code\\$q_1,\ldots,q_{384}$};
-\node[b, below left=7mm and -1mm of q] (u1) {$q_{17}$\\$\downarrow$ LUT$_{17}$};
-\node[b, below=7mm of q] (u2) {$q_{81}$\\$\downarrow$ LUT$_{81}$};
-\node[b, below right=7mm and -1mm of q] (pair) {$(q_{17},q_{81})$\\$\downarrow$ pair LUT};
-\node[b, below=8mm of u2, minimum width=27mm] (sum) {add selected evidence\\$F_C(q)$};
-\draw[->] (q) -- (u1); \draw[->] (q) -- (u2); \draw[->] (q) -- (pair);
-\draw[->] (u1) -- (sum); \draw[->] (u2) -- (sum); \draw[->] (pair) -- (sum);
-\end{tikzpicture}
-\caption{A compiled predicate touches only selected coordinates. The main search benchmark uses 24 unary tables and two pair tables (26 LUT operations/concept).}
-\label{fig:predicate}
-\end{figure}
+Given current logits $s_i=F_C(q_i)$, define $p_i=\sigmoid(s_i)$, residual $r_i=y_i-p_i$, and curvature $h_i=p_i(1-p_i)$. For candidate coordinate $j$ and bin $v$,
+\begin{equation}
+G_{jv}=\sum_{i:q_{ij}=v}r_i,\qquad
+H_{jv}=\sum_{i:q_{ij}=v}h_i ,
+\end{equation}
+with Newton update $\Delta f_j(v)=G_{jv}/(H_{jv}+\lambda)$ and approximate gain
+\begin{equation}
+\mathcal{G}_j=\frac12\sum_v\frac{G_{jv}^2}{H_{jv}+\lambda}.
+\end{equation}
+We greedily add high-gain coordinates, cyclically refit selected unary tables, and then add a small number of pair tables. The main independent-teacher runs use 24 unary terms and two pair terms for RSA1/2/4. Approximate serialized program sizes, including FP32 table values, coordinate identifiers, intercept, and scalar calibration parameters, are 292 bytes for RSA1, 580 bytes for RSA2, and 3,652 bytes for RSA4.
 
-\subsection{Residual Newton boosting}
-Given current logits $s_i=F_C(q_i)$, let $p_i=\sigmoid(s_i)$, gradient residual $r_i=y_i-p_i$, and curvature $h_i=p_i(1-p_i)$. For candidate coordinate $j$ and bin $v$, define
+\subsection{Centered binary two-level reconstruction}
+The strongest compact design in the final benchmark is a different compiler. Fit a global centroid $\mu$ on search-side embeddings and store the sign pattern of each residual:
 \begin{equation}
-G_{jv}=\sum_{i:q_{ij}=v} r_i,\qquad
-H_{jv}=\sum_{i:q_{ij}=v} h_i.
+r=x-\mu,\qquad b_j(x)=\mathbb{1}[r_j>0].
 \end{equation}
-The Newton table is $\Delta f_j(v)=G_{jv}/(H_{jv}+\lambda)$, with approximate gain
+For each item, store two least-squares reconstruction levels,
 \begin{equation}
-\mathcal{G}_j=\frac12\sum_v \frac{G_{jv}^2}{H_{jv}+\lambda}.
+\ell_x=\operatorname{mean}_{j:b_j=0} r_j,\qquad
+h_x=\operatorname{mean}_{j:b_j=1} r_j.
+\label{eq:ls2}
 \end{equation}
-At each stage we add the highest-gain coordinate not yet selected and update residuals. A short cyclic backfitting pass then refits the selected tables. Pair tables are learned analogously over joint $16\times16$ bins.
+The residual coordinate is then approximated by
+\begin{equation}
+\widehat r_j=\ell_x(1-b_j)+h_x b_j .
+\end{equation}
+For $D=384$, the sign vector costs 48 packed bytes and $(\ell_x,h_x)$ cost two FP32 scalars, for 56 bytes/item.
+
+Train a supervised FP32 linear semantic head
+\begin{equation}
+s_C(x)=w_C^\top x+\beta_C .
+\end{equation}
+We uniformly quantize $w_C$ to unsigned int4:
+\begin{equation}
+q_j^C=\operatorname{clip}_{[0,15]}
+\left(\operatorname{round}\frac{w_{Cj}-a_C}{\Delta_C}\right),
+\qquad
+\widetilde w_{Cj}=a_C+\Delta_C q_j^C .
+\end{equation}
+Under the two-level reconstruction, the approximate predicate score is
+\begin{equation}
+\widehat s_C(x)=
+\beta_C+\mu^\top\widetilde w_C
++\ell_x\left(\sum_j\widetilde w_{Cj}-P_C(x)\right)
++h_x P_C(x),
+\label{eq:binary_score}
+\end{equation}
+where
+\begin{equation}
+P_C(x)=\sum_j b_j(x)\widetilde w_{Cj}.
+\end{equation}
+
+The int4 vector is represented as four packed bit planes $M_{Ct}$, $t=0,\ldots,3$. Let $B_x$ denote the 384 packed document bits and $n_+(x)$ their population count. Then
+\begin{equation}
+P_C(x)=
+a_C n_+(x)
++\Delta_C\sum_{t=0}^{3}2^t
+\operatorname{popcnt}(B_x\wedge M_{Ct}).
+\label{eq:popcount}
+\end{equation}
+Thus the 384-dimensional weighted sum reduces to four bitwise AND/popcount passes over six 64-bit words plus a small number of scalar operations. The serialized predicate is approximately 216 bytes: 192 bytes of int4 weights plus quantization and precomputed scalar state. We call this method \emph{Binary1-LS2-int4}; the repository code name is \code{bbq1\_ls2\_int4q}. The name reflects inspiration from asymmetric binary quantization, but this is not an exact implementation of Lucene/Elasticsearch BBQ.
 
 \begin{algorithm}[t]
-\caption{Compile a latent predicate $C$}
-\label{alg:compile}
+\caption{Compile a centered-binary semantic predicate}
+\label{alg:binary_compile}
 \begin{algorithmic}[1]
-\Require Quantized fit codes $Q$, labels $y_C$, unary budget $K$, pair budget $M$
-\State $b\gets \logit((\sum_i y_i+0.5)/(n+1))$; $s_i\gets b$
-\State Build a candidate pool using marginal discriminative strength
-\For{$t=1,\ldots,K$}
-  \State $p_i\gets\sigmoid(s_i)$; $r_i\gets y_i-p_i$; $h_i\gets p_i(1-p_i)$
-  \For{each candidate coordinate $j$}
-    \State compute $\Delta f_j(v)=G_{jv}/(H_{jv}+\lambda)$ and gain $\mathcal{G}_j$
-  \EndFor
-  \State select $j^*=\arg\max_j\mathcal{G}_j$; add $\eta\Delta f_{j^*}$ to $F_C$ and $s$
-\EndFor
-\State cyclically refit selected unary tables with Newton updates
-\For{$m=1,\ldots,M$}
-  \State select the highest-gain pair among selected coordinates
-  \State add a $16\times16$ pair table $g_{jk}$
-\EndFor
-\State \Return sparse program $F_C$ with selected unary and pair tables
+\Require Fit embeddings $X$, labels $y_C$, shared centroid $\mu$
+\State fit FP32 linear head $(w_C,\beta_C)$ on $(X,y_C)$
+\State quantize $w_C$ to $(q_C,a_C,\Delta_C)$ with $q_C\in\{0,\ldots,15\}^D$
+\State pack the four bit planes of $q_C$
+\State precompute $\sum_j\widetilde w_{Cj}$ and $\beta_C+\mu^\top\widetilde w_C$
+\State fit scalar calibration on the held-out calibration split
+\State \Return packed int4 program and calibration parameters
 \end{algorithmic}
 \end{algorithm}
 
-\subsection{Calibration and semantic algebra}
-Independently trained concept logits are not on a common evidence scale. On a held-out calibration split, fit a scalar map
+\subsection{PQ64 compiled linear baseline}
+Product Quantization (PQ) \citep{jegou2011pq} provides a strong compressed baseline. We partition $D=384$ into $m=64$ six-dimensional subspaces and use one 8-bit code per subspace, giving 64 bytes/item. For a learned linear head $w_C=[w_{C1};\ldots;w_{C64}]$ and PQ centroids $c_{mk}$, precompute
 \begin{equation}
-L_C(x)=a_CF_C(q(x))+c_C, \qquad p_C(x)=\sigmoid(L_C(x)).
+L_{Cm}[k]=w_{Cm}^\top c_{mk},\qquad k\in\{0,\ldots,255\}.
 \end{equation}
-For positive predicates $\mathcal{Q}^+$ and negated predicates $\mathcal{Q}^-$, we score
+An item with codes $(q_1,\ldots,q_{64})$ is scored by
 \begin{equation}
-S_{\mathcal{Q}}(x)=\sum_{C\in\mathcal{Q}^+}\log p_C(x)+
-\sum_{C\in\mathcal{Q}^-}\log(1-p_C(x)).
+\widehat s_C^{\mathrm{PQ}}(x)=\beta_C+\sum_{m=1}^{64}L_{Cm}[q_m].
+\label{eq:pq_compiled}
+\end{equation}
+This preserves much of the FP32 linear quality, but the compiled predicate stores $64\times256$ FP32 LUT entries. In our accounting this is about 65,548 bytes/concept, over two orders of magnitude larger than Binary1-LS2-int4.
+
+\subsection{Calibration and semantic algebra}
+Independently trained concept scores are not on a common evidence scale. On a held-out calibration split, fit a scalar map
+\begin{equation}
+L_C(x)=a_C'F_C(x)+c_C,\qquad p_C(x)=\sigmoid(L_C(x)).
+\end{equation}
+Here $F_C$ may be a sparse LUT score, a binary linear score, a PQ-compiled score, or the FP32 linear score. For positive predicates $\mathcal{Q}^+$ and negated predicates $\mathcal{Q}^-$, we score
+\begin{equation}
+S_{\mathcal{Q}}(x)=
+\sum_{C\in\mathcal{Q}^+}\log p_C(x)
++\sum_{C\in\mathcal{Q}^-}\log(1-p_C(x)).
 \label{eq:composition}
 \end{equation}
-This product-of-evidence operator is commutative and associative over the selected predicates, so a query can be assembled from independently compiled concepts. We evaluate AND and NOT; other operators are future work.
+This product-of-evidence rule is commutative and associative over the selected predicates. We use it as a simple execution algebra, not as a claim of a novel probabilistic operator.
 
 \begin{algorithm}[t]
 \caption{Execute a semantic query plan}
 \label{alg:execute}
 \begin{algorithmic}[1]
-\Require ANN candidate set $A$, exact filters $E$, positive concepts $\mathcal{Q}^+$, negative concepts $\mathcal{Q}^-$, budget $B$
+\Require ANN candidates $A$, exact filters $E$, positive concepts $\mathcal{Q}^+$, negative concepts $\mathcal{Q}^-$, budget $B$
 \State $A'\gets\{x\in A:E(x)=\mathrm{true}\}$
 \For{each $x\in A'$}
   \State evaluate only the compiled programs requested by the query
@@ -93,4 +134,3 @@ This product-of-evidence operator is commutative and associative over the select
 \State \Return survivors to the downstream ranker
 \end{algorithmic}
 \end{algorithm}
-
