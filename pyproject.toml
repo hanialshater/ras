@@ -20,6 +20,11 @@ dependencies = [
   "PyYAML",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+benchmark = ["faiss-cpu"]
+demo = ["gradio>=5"]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 py-modules = ["rsa_v2"]
@@ -29,3 +34,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = [".", "src"]
