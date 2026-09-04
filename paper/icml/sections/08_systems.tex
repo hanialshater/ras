@@ -1,0 +1,54 @@
+\section{Systems Interface and Latency Scope}
+\label{sec:systems}
+
+\subsection{Bring-your-own retrieval and embeddings}
+The intended deployment boundary is deliberately narrow.  A host search engine owns lexical/vector retrieval, exact filters, document lifecycle, and the downstream ranker.  The semantic layer is a sidecar keyed by stable integer row IDs.  Given any precomputed item embedding matrix $X\in\R^{N\times D}$, the sidecar fits one catalog-wide binary encoder, writes packed item codes once, and separately stores compiled predicate programs.  At query time the host passes only the candidate row IDs that survive ANN retrieval and exact filters; the sidecar returns a semantically pruned top-$k$ set.  No full-precision item embedding is required online by Binary1-LS2-int4.
+
+This interface has an operational property that is central to the paper's joint-compression framing: adding a concept writes a new predicate program but does not rewrite the item index.  Conversely, changing the embedding model or the catalog-wide binary transform creates a new index generation and requires predicates to be recompiled.  New items can be encoded with the frozen transform; deletes may remain owned by the host retrieval layer, which simply stops emitting the corresponding row IDs.
+
+The repository now exposes this contract through \code{BinarySemanticIndex}, \code{ProgramStore}, and \code{SemanticExecutor}.  The portable item layout is a packed bit file plus two f32 correction values per item; predicate directories contain packed int4 weight bit planes and scalar scoring/calibration metadata.  The Python reference loader memory-maps the item payload.  The current Rust prototype reads the resident files into memory; mmap/segment management remains systems work rather than a result claimed here.
+
+\subsection{Latency accounting}
+End-to-end search latency should be decomposed rather than attributing the entire query path to the semantic kernel:
+\begin{equation}
+T_{\mathrm{search}} = T_{\mathrm{ANN}} + T_{\mathrm{filter}} + T_{\mathrm{semantic}}
++ T_{\mathrm{top}k} + T_{\mathrm{rank}} + T_{\mathrm{RPC}}.
+\label{eq:latency_decomp}
+\end{equation}
+The native results in Section~\ref{tab:native} measure a single-threaded semantic \emph{microkernel}: real learned item codes and programs are resident, but ANN traversal, filtering, calibrated composition, heap maintenance, networking, and downstream ranking are excluded.  Table~\ref{tab:latency} reports the same measurements as elapsed time, which is easier to relate to search-stage budgets.
+
+\begin{table*}[t]
+\centering
+\caption{Single-thread semantic microkernel latency in milliseconds (median of five repetitions, real held-out rows/programs tiled to 500k resident items).  These are not end-to-end search latencies.}
+\label{tab:latency}
+\small
+\begin{tabular}{rrccc}
+\toprule
+Candidates & Predicates & FP32 linear & PQ64 & Binary1-LS2-int4\\
+\midrule
+5k   & 1 & 3.049 & 0.540 & \textbf{0.484}\\
+5k   & 4 & 6.439 & \textbf{0.971} & 1.130\\
+5k   & 8 & 11.812 & 2.108 & \textbf{1.993}\\
+20k  & 1 & 15.530 & 2.218 & \textbf{2.190}\\
+20k  & 4 & 27.236 & \textbf{4.120} & 5.694\\
+20k  & 8 & 48.241 & 8.910 & \textbf{8.617}\\
+100k & 1 & 76.846 & \textbf{14.265} & 19.080\\
+100k & 4 & 133.781 & \textbf{26.302} & 31.248\\
+100k & 8 & 242.037 & \textbf{48.923} & 50.583\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+At the 5k candidate pool used by the main quality benchmark, the Binary1-LS2-int4 microkernel ranges from 0.48\,ms for one predicate to 1.99\,ms for eight predicates in this run.  At 20k candidates the corresponding values are 2.19 and 8.62\,ms.  The CPU model was not recorded for this historical run, so the absolute numbers should be treated as one-machine measurements rather than portable latency claims.  Their main value is to show the scaling regime and motivate a fully instrumented stage benchmark.
+
+\subsection{Composition-aware early termination}
+The calibrated composition rule provides a simple upper bound that can be used by a native executor.  Each positive term is $\log\sigmoid(L_C)\le 0$ and each negated term is $\log\sigmoid(-L_C)\le 0$.  After evaluating any prefix $P$ of a query plan,
+\begin{equation}
+S_P(x) \ge S_{\mathcal Q}(x),
+\end{equation}
+so the partial score is an upper bound on the final score.  If a top-$k$ heap already has threshold $\tau$ and $S_P(x)\le\tau$, the item cannot recover after evaluating the remaining predicates and may be rejected safely.  This suggests ordering likely-selective predicates first, analogous in spirit to WAND/MaxScore pruning, while preserving the exact score for every survivor.
+
+The repository includes a native \code{sidecar} executor and \code{experiments.sidecar_systems} harness that measure calibrated composition, top-$k$ maintenance, and this early-exit rule separately from the older microkernel.  The harness records CPU model, median and p95 latency, candidate count, predicate count, resident-set size, and the fraction of predicate invocations actually executed.  We do not report those stage-level results here until they are run under the same controlled artifact protocol as the quality benchmark.
+
+\subsection{Open systems questions}
+The next systems questions are therefore concrete rather than rhetorical: (i) mmap/zero-copy loading and direct candidate-array handoff from an ANN engine; (ii) p50/p95/p99 under concurrency and thread scaling; (iii) random versus sorted document-ID locality; (iv) large semantic vocabularies in which active programs are drawn from stores of $10^2$--$10^5$ predicates; (v) update, tombstone, and index-generation semantics; and (vi) end-to-end integration that reports global recall or NDCG together with Eq.~\eqref{eq:latency_decomp}.  The 303$\times$ program-size gap to PQ64 is especially relevant to (iv), but the current eight-concept benchmark does not yet establish a cache-level advantage.
