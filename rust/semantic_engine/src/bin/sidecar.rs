@@ -87,17 +87,25 @@ struct Program {
     cal_a: f32,
     cal_b: f32,
     positive_rate: f32,
+    encoder_fingerprint: String,
 }
 
 fn load_program(root: &Path, name: &str) -> Program {
+    assert!(!name.is_empty() && name != "." && name != ".." &&
+        name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'),
+        "invalid program name");
     let p = root.join(name);
-    let planes = fs::read(p.join("bitplanes.u8")).unwrap();
+    assert_eq!(p.canonicalize().unwrap().parent().unwrap(), root.canonicalize().unwrap(), "program escapes store");
+    let meta: serde_json::Value = serde_json::from_slice(&fs::read(p.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(meta["version"].as_u64(), Some(2), "recompile legacy programs");
+    let planes = fs::read(p.join(meta["bitplanes_file"].as_str().unwrap())).unwrap();
     assert_eq!(planes.len() % 4, 0);
     let packed_bytes = planes.len() / 4;
-    let s = read_f32(p.join("scalars.f32"));
+    let s = read_f32(p.join(meta["scalars_file"].as_str().unwrap()));
     assert!(s.len() >= 7, "program scalars.f32 must contain seven f32 values");
     Program {
         name: name.to_string(), packed_bytes, planes,
+        encoder_fingerprint: meta["encoder_fingerprint"].as_str().unwrap().to_owned(),
         weight_lo: s[0], weight_scale: s[1], base: s[2], sum_w: s[3],
         cal_a: s[4], cal_b: s[5], positive_rate: s[6],
     }
@@ -283,6 +291,10 @@ fn main() {
     let mut refs: Vec<PredRef> = Vec::new();
     for name in &a.positive { refs.push(PredRef { program: load_program(&a.programs, name), positive: true }); }
     for name in &a.negative { refs.push(PredRef { program: load_program(&a.programs, name), positive: false }); }
+    let meta: serde_json::Value = serde_json::from_slice(&fs::read(a.index.join("manifest.json")).unwrap()).unwrap();
+    let fingerprint = meta["encoder_fingerprint"].as_str().expect("re-export legacy index");
+    assert!(!fingerprint.is_empty(), "index has no encoder fingerprint");
+    for r in &refs { assert_eq!(r.program.encoder_fingerprint, fingerprint, "program/index encoder mismatch"); }
     let packed = refs[0].program.packed_bytes;
     for r in &refs { assert_eq!(r.program.packed_bytes, packed, "program dimensions differ"); }
     refs.sort_by(|a, b| a.expected_acceptance().total_cmp(&b.expected_acceptance()));

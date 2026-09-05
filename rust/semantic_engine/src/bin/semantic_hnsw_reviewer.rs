@@ -342,7 +342,8 @@ fn push_topk(heap: &mut BinaryHeap<Reverse<ScoreNode>>, k: usize, id: usize, sco
 }
 
 fn heap_ids(heap: BinaryHeap<Reverse<ScoreNode>>) -> Vec<usize> {
-    heap.into_iter().map(|x| x.0.id).collect()
+    // Reverse heap ascending order is descending score, with deterministic ties.
+    heap.into_sorted_vec().into_iter().map(|x| x.0.id).collect()
 }
 
 #[derive(Debug)]
@@ -413,12 +414,11 @@ fn search_materialized(graph: &Graph, items: &[f32], sem: &[f32], query: &[f32],
 fn search_overfetch(graph: &Graph, items: &[f32], sem: &[f32], query: &[f32],
     skip: usize, k: usize, ask: usize, ef: usize, gate: f32) -> SearchResult {
     let mut out = search_custom(graph, items, query, skip, ask, ef, |_| true);
-    let mut filtered = BinaryHeap::new();
-    for &id in &out.ids {
-        if sem[id] >= gate { push_topk(&mut filtered, k, id, dot(items, id, query)); }
-    }
+    // search_custom already returns dense score order. Post-filter it without
+    // recomputing distances or charging an extra top-k heap to over-fetch.
     out.semantic_evals = out.ids.len();
-    out.ids = heap_ids(filtered);
+    out.ids.retain(|&id| sem[id] >= gate);
+    out.ids.truncate(k);
     out
 }
 
@@ -535,8 +535,30 @@ fn main() {
         let names = meta["concepts"].as_array().unwrap();
         let refs = a.positive.iter().map(|x| (x, true)).chain(a.negative.iter().map(|x| (x, false)))
             .map(|(name, sign)| (names.iter().position(|x| x.as_str() == Some(name.as_str())).unwrap(), sign)).collect::<Vec<_>>();
-        let values = read_f32(table_path);
-        assert_eq!(values.len(), n * names.len());
+        let python_values = read_f32(table_path);
+        assert_eq!(python_values.len(), n * names.len());
+        let all_names = names.iter().map(|x| x.as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        let all = Sidecar::load(&a.assets.join("sidecar_index"), &a.programs, &all_names, &[]);
+        // Materialize the exact native f32 kernel so the table and live path
+        // have bit-identical eligibility. Python/native rounding is measured.
+        let mut values = Vec::with_capacity(python_values.len());
+        for item in 0..n {
+            let off = item * all.packed_bytes;
+            let doc = &all.bits[off..off + all.packed_bytes];
+            let count = doc.iter().map(|b| b.count_ones()).sum::<u32>();
+            for r in &all.refs {
+                let raw = raw_program_score(doc, count, all.corr[item * 2], all.corr[item * 2 + 1], &r.p);
+                values.push(r.p.cal_a * raw + r.p.cal_b);
+            }
+        }
+        let max_error = values.iter().zip(&python_values).map(|(a, b)| (a-b).abs()).fold(0.0f32, f32::max);
+        println!("[reviewer] Python/native logit max_abs_error={max_error:.8}");
+        assert!(max_error < 1e-3, "Python/native compiled score mismatch");
+        for item in 0..n {
+            assert_eq!(table_mean_logprob(&values, item, names.len(), &refs).to_bits(), sem[item].to_bits());
+        }
+        let bytes = values.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>();
+        fs::write(a.out.with_extension("logits.f32"), bytes).unwrap();
         (values, names.len(), refs)
     } else { (Vec::new(), 0, Vec::new()) };
     let qn = a.queries.min(n);
@@ -599,7 +621,9 @@ fn main() {
                     };
                     let ms = timer.elapsed().as_secs_f64() * 1000.0;
                     let recall = recall_at_k(&result.ids, &truth);
-                    writeln!(out, "{qi},{repeat},{position},{gi},{gate:.8},{method},{mult:.4},{ask},{ef_search},{ms:.6},{recall:.6},{},{},{},{},{},{qfrac:.6},true",
+                    let parity = same_ids(&result.ids, &mat.ids);
+                    if kind == 0 || kind == 1 || kind == 4 { assert!(parity, "filtered path parity failed"); }
+                    writeln!(out, "{qi},{repeat},{position},{gi},{gate:.8},{method},{mult:.4},{ask},{ef_search},{ms:.6},{recall:.6},{},{},{},{},{},{qfrac:.6},{parity}",
                         result.ids.len(), result.visited, result.semantic_evals,
                         result.predicate_evals, result.dense_pruned_before_semantic).unwrap();
                 }

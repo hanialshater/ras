@@ -31,6 +31,8 @@ jobs:
       - run: pytest -q tests/test_binary.py tests/test_semantic_sidecar.py tests/test_accounting.py tests/test_review_regressions.py tests/test_smoke.py
       - run: cargo test --release --manifest-path rust/semantic_engine/Cargo.toml --bin semantic_hnsw_reviewer
       - run: python -u -m experiments.review_followup --synthetic --output-dir /tmp/ras-review-smoke --hnsw-queries 4 --timing-repeats 1 --overfetch-multipliers 1,2 --ef-multipliers 1,2
+      - name: Check portable native loading
+        run: cargo run --release --manifest-path rust/semantic_engine/Cargo.toml --bin sidecar -- --index /tmp/ras-review-smoke/hnsw_assets/sidecar_index --programs /tmp/ras-review-smoke/hnsw_assets/sidecar_programs --positive minimalist --candidate-count 100 --topk 10 --repeats 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:

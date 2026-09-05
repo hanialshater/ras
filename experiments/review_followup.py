@@ -258,6 +258,12 @@ def main():
         x, teacher, df, model = data(cfg, args.synthetic)
         # Persist exact source identity/order without requiring the images in the result ZIP.
         df.to_json(root / "catalog_metadata.json", orient="records", indent=2)
+        x.astype("<f4").tofile(root / "retrieval_embeddings.f32")
+        teacher.astype("<f4").tofile(root / "teacher_scores.f32")
+        write_json(root / "source_arrays.json", {
+            "dtype": "<f4", "retrieval_shape": list(x.shape),
+            "teacher_shape": list(teacher.shape), "concepts": NAMES,
+        })
         for i, seed in enumerate(seeds):
             seed_run(cfg, root, int(seed), x, teacher, df, model, args.synthetic, i == 0)
     raw = pd.concat([pd.read_csv(root / f"seed_{s}" / "per_query.csv") for s in seeds], ignore_index=True)

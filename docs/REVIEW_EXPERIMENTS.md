@@ -5,7 +5,7 @@ Open [the Colab notebook](https://colab.research.google.com/github/hanialshater/
 ## What this run resolves
 
 - **Predicate-head precision:** PQ64-FP32 and PQ64-int4 share the exact same fitted codebook and item codes. Each gets its own scalar calibration on calibration rows. The int4 head is physically packed. Its 212-byte persistent payload includes weight offset/scale, intercept and calibration. The 65,548-byte active LUT remains separate.
-- **Materialized scores:** save eight calibrated logits per item as real FP32 files (32 B/item). Both FP32-head and compiled-head tables are evaluated for quality. The native table path composes compiled logits inside the same HNSW traversal, rather than receiving a precomposed score for free. The precomposed-score control is still reported separately.
+- **Materialized scores:** save eight calibrated logits per item as real FP32 files (32 B/item). Both FP32-head and compiled-head tables are evaluated for quality. The native table path composes compiled logits inside the same HNSW traversal, rather than receiving a precomposed score for free. Native logits are regenerated with the identical Rust arithmetic, checked against the Python export, and saved; exact table/live eligibility and result parity are asserted. The precomposed-score control is still reported separately.
 - **Controlled traversal:** one `search_custom` function implements live filtering, materialized filtering and dense over-fetch. Over-fetch sweeps returned candidate count and search effort separately. Methods are measured in randomized order for each query/gate/repetition. An optional library baseline is contextual only.
 
 The run also exports corrected all-query purity, explicit recall denominators, deployed memory with existing FP32 vectors, and a ZIP of raw/replay evidence. It does not automatically replace any reported paper result.
@@ -38,6 +38,8 @@ Key files:
 - `seed_*/replay.npz`: exact fit/calibration/test row identities, teacher thresholds, test labels, query vectors, learned weights, PQ codebook/codes and calibrated logits
 - `hnsw/raw.csv`, `summary.csv`, `same_run_pairs.csv`, `matched_recall.csv`
 - `deployment_memory.csv`, `compiler_payloads.json`, `scope.json`
+- `retrieval_embeddings.f32`, `teacher_scores.f32`, `source_arrays.json`: exact inputs for replay without model downloads
+- `hnsw/run_*.graph.json`, `hnsw/run_*.logits.f32`, `hnsw/Cargo.lock`: exact native graph, native-rounded tables and dependencies
 - `request.json`, `environment.json`, `checksums.json`
 - `ras_review_results.zip` (excludes model/dataset caches)
 
@@ -47,7 +49,7 @@ The larger vocabulary sweep is representation arithmetic, not measured behavior 
 
 Programs now carry an encoder fingerprint and immutable versioned payload files. The manifest is published atomically. Python executors check the manifest revision and refresh changed programs; a scoring call snapshots its requested programs. Old program format v1 cannot establish encoder identity and must be recompiled. Item bits need not change when the encoder itself is unchanged.
 
-The controlled Rust reviewer validates the program/index fingerprint and reads versioned payloads. Canonical `bitplanes.u8` and `scalars.f32` exports remain solely for historical benchmark compatibility; those legacy binaries assume immutable exported assets.
+The portable Rust sidecar and controlled Rust reviewer validate the program/index fingerprint and reads versioned payloads. Canonical `bitplanes.u8` and `scalars.f32` exports remain solely for historical benchmark compatibility; those legacy binaries assume immutable exported assets.
 
 ## Result interpretation
 

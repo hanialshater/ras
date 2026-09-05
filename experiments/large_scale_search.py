@@ -144,21 +144,8 @@ def _evaluate_queries(model, xtest, df_test, ytest, rsa_logits, linear_logits, q
 
 
 def _aggregate(per_query, cfg):
-    nboot = int(cfg["benchmark"].get("bootstrap_samples", 2000)); rows, delta_rows = [], []
-    for (method, retention), g in per_query.groupby(["method", "retention"], sort=True):
-        valid = g[g["total_true"] > 0]
-        for metric in ["recall", "purity", "recall_efficiency"]:
-            rows.append({"method": method, "retention": retention, "metric": metric, **bootstrap_mean_ci(valid[metric].to_numpy(), seed=991, n_boot=nboot)})
-    pivot = per_query[per_query.total_true > 0].pivot_table(index=["seed", "query_id", "retention"], columns="method", values=["recall", "purity"], aggfunc="first")
-    for retention in sorted(per_query.retention.unique()):
-        try: sub = pivot.xs(retention, level="retention")
-        except KeyError: continue
-        for method in ["rsa", "linear_fp32_proxy"]:
-            for metric in ["recall", "purity"]:
-                if (metric, method) in sub.columns and (metric, "dense") in sub.columns:
-                    d = (sub[(metric, method)] - sub[(metric, "dense")]).dropna().to_numpy()
-                    delta_rows.append({"method": method, "retention": retention, "metric": f"delta_{metric}_vs_dense", **bootstrap_mean_ci(d, seed=992, n_boot=nboot)})
-    return pd.DataFrame(rows), pd.DataFrame(delta_rows)
+    from ras.evaluation import aggregate
+    return aggregate(per_query, cfg, reference="rsa")
 
 
 def _plot_summary(summary, out_dir: Path):
