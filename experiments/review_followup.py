@@ -251,6 +251,9 @@ def main():
     cfg["cache_dir"] = str(root / "cache")
     import faiss
     faiss.omp_set_num_threads(1)
+    env["faiss"] = getattr(faiss, "__version__", "unknown")
+    write_json(root / "environment.json", env)
+    (root / "pip-freeze.txt").write_text(subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True))
     if not all((root / f"seed_{s}" / "complete.json").exists() for s in seeds):
         x, teacher, df, model = data(cfg, args.synthetic)
         # Persist exact source identity/order without requiring the images in the result ZIP.

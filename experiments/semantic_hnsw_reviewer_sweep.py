@@ -279,6 +279,9 @@ def run(args: argparse.Namespace) -> Path:
 
     norm_stats = _verify_normalized(assets / "fp32_items.f32")
     reviewer_bin, dot_bin = _build_rust(repo_root)
+    lock = repo_root / "rust" / "semantic_engine" / "Cargo.lock"
+    if lock.exists():
+        shutil.copy2(lock, out / "Cargo.lock")
 
     dot_run = subprocess.run(
         [
@@ -354,7 +357,14 @@ def run(args: argparse.Namespace) -> Path:
         ]
         if args.include_library:
             cmd.append("--include-library")
-        subprocess.run(cmd, check=True)
+        done = out / f"run_{name}.done.json"
+        signature = {"command": cmd, "commit": _git_commit(repo_root),
+                     "cpu": _cpu_model(), "rustc": _rust_version()}
+        if run_csv.exists() and done.exists() and json.loads(done.read_text()) == signature:
+            print(f"[resume] completed predicate set {name}", flush=True)
+        else:
+            subprocess.run(cmd, check=True)
+            done.write_text(json.dumps(signature, indent=2), encoding="utf-8")
         frame = _annotate_run(
             pd.read_csv(run_csv), predicate_set=name, gates=gates, k=args.k
         )

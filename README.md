@@ -17,6 +17,18 @@ compact design is now **Binary1-LS2-int4**:
 The manuscript is titled **Compiled Semantic Predicates for Approximate Nearest
 Neighbor Search**.
 
+## Review follow-up (new experiments; results pending)
+
+A focused run adds PQ64 with int4 stored heads, materialized concept-logit tables,
+and over-fetch using the same traversal implementation as live filtering.
+
+[Open the review Colab](https://colab.research.google.com/github/hanialshater/ras/blob/codex/ras-review-experiments/notebooks/ras_review_experiments_colab.ipynb).
+Select a GPU runtime, run all cells, and download the result ZIP.
+See [protocol and artifacts](docs/REVIEW_EXPERIMENTS.md).
+
+The existing measurements below are historical. They have not been recomputed
+with the corrected all-query purity aggregation or the new comparisons.
+
 ## Headline results
 
 ### Semantic quality

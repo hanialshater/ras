@@ -509,6 +509,13 @@ fn main() {
     hnsw.set_searching_mode(true);
     let graph = extract_graph(&hnsw, n);
     println!("[reviewer] HNSW built in {:.2}s", t0.elapsed().as_secs_f64());
+    // hnsw_rs construction samples levels internally. Persist the exact graph
+    // used by this run so construction randomness remains inspectable/replayable.
+    let snapshot = serde_json::json!({
+        "neighbors": &graph.neigh, "levels": &graph.level,
+        "max_level": graph.max_level, "top_nodes": &graph.top_nodes,
+    });
+    fs::write(a.out.with_extension("graph.json"), serde_json::to_vec(&snapshot).unwrap()).unwrap();
 
     println!("[reviewer] materializing semantic truth scores once ...");
     let sem_t0 = Instant::now();
@@ -628,7 +635,7 @@ mod tests {
     #[test]
     fn invalid_nodes_remain_bridges() {
         let mut items = vec![0.; 3 * D];
-        items[0] = .2; items[D] = .3; items[2 * D] = .9;
+        items[0] = 0.2; items[D] = 0.3; items[2 * D] = 0.9;
         let graph = Graph { neigh: vec![vec![vec![1]], vec![vec![2]], vec![vec![]]],
             level: vec![0; 3], max_level: 0, top_nodes: vec![0] };
         let mut query = vec![0.; D]; query[0] = 1.;
