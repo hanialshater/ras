@@ -186,20 +186,7 @@ def eval_queries(retrieval_model, xtest, df_test, ytest, method_scores, queries,
     return pd.DataFrame(rows)
 
 
-def aggregate(per_query, cfg, reference="lut_random"):
-    nboot = int(cfg["benchmark"].get("bootstrap_samples", 2000)); rows, deltas = [], []; valid = per_query[per_query.total_true > 0]
-    for (method, retention), g in valid.groupby(["method", "retention"]):
-        for metric in ["recall", "purity", "recall_efficiency"]: rows.append({"method": method, "retention": retention, "metric": metric, **bootstrap_mean_ci(g[metric].to_numpy(), seed=881, n_boot=nboot)})
-    pivot = valid.pivot_table(index=["seed","query_id","retention"], columns="method", values=["recall","purity"], aggfunc="first"); methods = sorted(valid.method.unique())
-    for retention in sorted(valid.retention.unique()):
-        sub = pivot.xs(retention, level="retention")
-        for method in methods:
-            for ref in ["dense", reference, "linear_fp32"]:
-                if method == ref: continue
-                for metric in ["recall", "purity"]:
-                    if (metric, method) in sub.columns and (metric, ref) in sub.columns:
-                        d = (sub[(metric, method)] - sub[(metric, ref)]).dropna().to_numpy(); deltas.append({"method": method, "reference": ref, "retention": retention, "metric": f"delta_{metric}", **bootstrap_mean_ci(d, seed=882, n_boot=nboot)})
-    return pd.DataFrame(rows), pd.DataFrame(deltas)
+from ras.evaluation import aggregate
 
 
 def prevalence_depth(per_query):

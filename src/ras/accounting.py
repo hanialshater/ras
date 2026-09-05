@@ -120,3 +120,62 @@ __all__ = [
     "decimal_gb",
     "memory_rows",
 ]
+
+
+# A packed 384-D int4 PQ head plus offset, scale, intercept and two calibration
+# scalars: 192 + 20 B. The active FP32 LUT has the same size as FP32-head PQ.
+METHOD_FOOTPRINTS["pq64_int4_head"] = MethodFootprint(
+    "pq64_int4_head", "PQ64 + int4 head", 64, 212, 65_548,
+    PQ64_SHARED_CODEBOOK_BYTES,
+)
+
+
+def compiler_footprints(dim=384, pq_m=64, pq_bits=8, k_coords=24, pair_luts=2):
+    """Shared payload definitions for experiment exporters; packed bytes only."""
+    def sparse(bits):
+        bins = 1 << bits
+        return 4 * (k_coords * bins + pair_luts * bins * bins + 3) + 2 * k_coords + 4 * pair_luts
+    packed = (dim + 7) // 8
+    out = {
+        "dense": MethodFootprint("dense", "Dense", dim * 4, 0),
+        "zero_shot_name": MethodFootprint("zero_shot_name", "Zero-shot name", dim * 4, dim * 4),
+        "zero_shot_prompt_diff": MethodFootprint("zero_shot_prompt_diff", "Zero-shot prompts", dim * 4, dim * 4),
+        "linear_fp32": MethodFootprint("linear_fp32", "FP32 linear", dim * 4, dim * 4 + 12),
+        "bbq1_ls2_f32q": MethodFootprint("bbq1_ls2_f32q", "Binary1 FP32 head", packed + 8, dim * 4 + 20),
+        "bbq1_ls2_int4q": MethodFootprint("bbq1_ls2_int4q", "Binary1 int4 head", packed + 8, 4 * packed + 24),
+    }
+    for name, head_bytes in [("pq64_linear_lut", dim * 4 + 12), ("pq64_int4_head", (dim + 1) // 2 + 20)]:
+        out[name] = MethodFootprint(
+            name, name, (pq_m * pq_bits + 7) // 8, head_bytes,
+            pq_m * (1 << pq_bits) * 4 + 12, (1 << pq_bits) * dim * 4,
+        )
+    for name, bits in [("rsa1_centered_identity", 1), ("rsa1_centered_random", 1),
+                       ("rsa2_random", 2), ("rsa4_random", 4)]:
+        out[name] = MethodFootprint(name, name, (dim * bits + 7) // 8, sparse(bits))
+    return out
+
+
+def deployment_memory_rows(n_items, n_concepts, dim=384):
+    """Incremental memory when host retrieval already retains FP32 item vectors."""
+    host = int(n_items) * dim * 4
+    selected = compiler_footprints(dim)
+    rows = []
+    for key in ["linear_fp32", "bbq1_ls2_int4q", "pq64_linear_lut", "pq64_int4_head"]:
+        method = selected[key]
+        extra = method.total_bytes(n_items, n_concepts)
+        if key == "linear_fp32":
+            extra -= host
+        rows.append({
+            "method": key, "n_items": n_items, "n_concepts": n_concepts,
+            "host_vectors_B": host, "incremental_persistent_B": extra,
+            "combined_persistent_B": host + extra,
+            "active_predicate_B": method.active_bytes,
+        })
+    # Learned logits are precomputed on items. Concept updates require a catalog scan.
+    extra = int(n_items) * int(n_concepts) * 4
+    rows.append({
+        "method": "materialized_fp32_logits", "n_items": n_items, "n_concepts": n_concepts,
+        "host_vectors_B": host, "incremental_persistent_B": extra,
+        "combined_persistent_B": host + extra, "active_predicate_B": 0,
+    })
+    return rows

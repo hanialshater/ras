@@ -208,28 +208,21 @@ def fit_bbq_like_linear(code, ycal, ytest, coefs, intercepts, seed, *, int4_quer
 
 
 def _method_meta(cfg):
-    d = 384
-    k = int(cfg["rsa"]["k_coords"])
-    pairs = int(cfg["rsa"].get("pair_luts", 0))
-    pq_m = int(cfg["pq"]["m"])
-    pq_bits = int(cfg["pq"]["nbits"])
-    pq_program = pq_m * (1 << pq_bits) * 4 + 12
-    return pd.DataFrame(
-        [
-            {"method": "dense", "bytes_per_item": 1536, "program_bytes_per_concept": 0, "notes": "MiniLM cosine ordering"},
-            {"method": "zero_shot_name", "bytes_per_item": 1536, "program_bytes_per_concept": 1536, "notes": "training-free concept vector"},
-            {"method": "zero_shot_prompt_diff", "bytes_per_item": 1536, "program_bytes_per_concept": 1536, "notes": "training-free positive-minus-negative prompt vector"},
-            {"method": "linear_fp32", "bytes_per_item": 1536, "program_bytes_per_concept": d * 4 + 12, "notes": "supervised FP32 linear head"},
-            {"method": "pq64_linear_lut", "bytes_per_item": pq_m * pq_bits / 8, "program_bytes_per_concept": pq_program, "notes": "FP32 linear head compiled into all PQ subspaces"},
-            {"method": "bbq1_ls2_f32q", "bytes_per_item": d / 8 + 8, "program_bytes_per_concept": d * 4 + 20, "notes": "BBQ-inspired centered 1-bit docs + two LS2 corrections; FP32 predicate weight; not Lucene BBQ"},
-            {"method": "bbq1_ls2_int4q", "bytes_per_item": d / 8 + 8, "program_bytes_per_concept": d / 2 + 24, "notes": "BBQ-inspired centered 1-bit docs + two LS2 corrections; int4 predicate weight; not Lucene BBQ"},
-            {"method": "rsa1_centered_identity", "bytes_per_item": d / 8, "program_bytes_per_concept": _rsa_program_bytes(2, cfg), "notes": f"centered 1-bit sparse learned program, {k} unary + {pairs} pair terms"},
-            {"method": "rsa1_centered_random", "bytes_per_item": d / 8, "program_bytes_per_concept": _rsa_program_bytes(2, cfg), "notes": f"centered random-orthogonal 1-bit sparse learned program, {k} unary + {pairs} pairs"},
-            {"method": "rsa2_random", "bytes_per_item": d * 2 / 8, "program_bytes_per_concept": _rsa_program_bytes(4, cfg), "notes": "random-orthogonal 2-bit quantile sparse program"},
-            {"method": "rsa4_random", "bytes_per_item": d * 4 / 8, "program_bytes_per_concept": _rsa_program_bytes(16, cfg), "notes": "current random-orthogonal 4-bit quantile sparse program"},
-            {"method": "oracle", "bytes_per_item": np.nan, "program_bytes_per_concept": np.nan, "notes": "teacher-truth upper bound inside ANN pool"},
-        ]
+    from ras.accounting import compiler_footprints
+    footprints = compiler_footprints(
+        pq_m=int(cfg["pq"]["m"]), pq_bits=int(cfg["pq"]["nbits"]),
+        k_coords=int(cfg["rsa"]["k_coords"]), pair_luts=int(cfg["rsa"].get("pair_luts", 0)),
     )
+    rows = [{
+        "method": name, "bytes_per_item": f.item_bytes,
+        "program_bytes_per_concept": f.program_bytes,
+        "persistent_program_bytes_per_concept": f.program_bytes,
+        "active_program_bytes_per_concept": f.active_bytes,
+        "shared_bytes": f.shared_bytes, "notes": "packed persistent payload; active state separate",
+    } for name, f in footprints.items() if name != "pq64_int4_head"]
+    rows.append({"method": "oracle", "bytes_per_item": np.nan,
+                 "program_bytes_per_concept": np.nan, "notes": "teacher truth within pool"})
+    return pd.DataFrame(rows)
 
 
 def _plot(summary, meta, root: Path):

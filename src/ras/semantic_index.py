@@ -19,7 +19,7 @@ f32 correction values = 56 bytes/item.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 from typing import Literal, Sequence
@@ -28,6 +28,7 @@ import numpy as np
 
 from .binary import (
     CenteredBinaryEncoder,
+    encoder_fingerprint,
     encode_centered_binary,
     fit_centered_binary_encoder,
     pack_document_bits,
@@ -48,6 +49,7 @@ class SemanticIndexManifest:
     seed: int
     item_bytes_theoretical: float
     has_item_ids: bool
+    encoder_fingerprint: str = ""
 
 
 @dataclass
@@ -140,6 +142,7 @@ class BinarySemanticIndex:
             seed=int(seed),
             item_bytes_theoretical=float(packed.shape[1] + 8),
             has_item_ids=bool(item_ids is not None),
+            encoder_fingerprint=encoder_fingerprint(encoder),
         )
         (path / "manifest.json").write_text(json.dumps(asdict(manifest), indent=2, sort_keys=True), encoding="utf-8")
         return cls.load(path)
@@ -166,6 +169,11 @@ class BinarySemanticIndex:
             seed=manifest.seed,
             with_corrections=True,
         )
+
+        actual_fingerprint = encoder_fingerprint(encoder)
+        if manifest.encoder_fingerprint and manifest.encoder_fingerprint != actual_fingerprint:
+            raise ValueError("semantic index encoder fingerprint does not match its files")
+        manifest = replace(manifest, encoder_fingerprint=actual_fingerprint)
 
         mode = "r" if mmap else None
         if mmap:

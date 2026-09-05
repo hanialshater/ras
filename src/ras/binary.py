@@ -18,6 +18,7 @@ bitwise kernel.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Literal
 
 import numpy as np
@@ -235,3 +236,12 @@ __all__ = [
     "pack_document_bits",
     "int4_weight_bitplanes",
 ]
+
+def encoder_fingerprint(encoder: CenteredBinaryEncoder) -> str:
+    """Identify the actual encoding transform, independent of catalog row count."""
+    h = hashlib.sha256(b"ras-centered-ls2-v1\0")
+    h.update(str(encoder.d).encode("ascii"))
+    h.update(bytes([int(encoder.with_corrections)]))
+    h.update(np.ascontiguousarray(encoder.centroid, dtype="<f4").tobytes())
+    h.update(np.ascontiguousarray(encoder.projection, dtype="<f4").tobytes())
+    return h.hexdigest()

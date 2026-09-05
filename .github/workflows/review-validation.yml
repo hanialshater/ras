@@ -1,0 +1,60 @@
+name: review-validation
+on:
+  push:
+    branches: ["codex/ras-review-experiments"]
+  pull_request:
+jobs:
+  controlled-checks:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src:.
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install numpy pandas scikit-learn faiss-cpu matplotlib PyYAML pytest
+      - run: python -m compileall -q src experiments tests
+      - name: Validate Colab cells
+        run: |
+          python - <<'PY'
+          import ast, json
+          path = 'notebooks/ras_review_experiments_colab.ipynb'
+          notebook = json.load(open(path))
+          for i, cell in enumerate(notebook['cells']):
+              if cell['cell_type'] == 'code':
+                  ast.parse(''.join(cell['source']), filename=f'{path}:cell-{i}')
+          PY
+      - run: pytest -q tests/test_binary.py tests/test_semantic_sidecar.py tests/test_accounting.py tests/test_review_regressions.py tests/test_smoke.py
+      - run: cargo test --release --manifest-path rust/semantic_engine/Cargo.toml --bin semantic_hnsw_reviewer
+      - run: python -u -m experiments.review_followup --synthetic --output-dir /tmp/ras-review-smoke --hnsw-queries 4 --timing-repeats 1 --overfetch-multipliers 1,2 --ef-multipliers 1,2
+      - name: Verify checkpoint resumption
+        run: python -u -m experiments.review_followup --synthetic --output-dir /tmp/ras-review-smoke --hnsw-queries 4 --timing-repeats 1 --overfetch-multipliers 1,2 --ef-multipliers 1,2
+      - name: Verify complete result bundle
+        run: |
+          python - <<'PY'
+          import json, zipfile
+          from pathlib import Path
+          import pandas as pd
+          root = Path('/tmp/ras-review-smoke')
+          raw = pd.read_csv(root / 'hnsw/raw.csv')
+          methods = set(raw.method)
+          assert {'semantic_hnsw_live', 'custom_overfetch_materialized', 'materialized_logits_hnsw'} <= methods
+          assert raw[raw.method.isin(['semantic_hnsw_live', 'materialized_logits_hnsw'])].live_matches_materialized.all()
+          assert len(raw.predicate_set.unique()) == 3
+          assert len(raw.query_id.unique()) == 4
+          assert json.load(open(root / 'compiler_payloads.json'))['pq64_int4_head']['program_bytes'] == 212
+          with zipfile.ZipFile(root / 'ras_review_results.zip') as archive:
+              assert archive.testzip() is None
+              assert {'checksums.json', 'teacher_scores.f32', 'retrieval_embeddings.f32', 'hnsw/raw.csv'} <= set(archive.namelist())
+          PY
+      - name: Check portable native loading
+        run: cargo run --release --manifest-path rust/semantic_engine/Cargo.toml --bin sidecar -- --index /tmp/ras-review-smoke/hnsw_assets/sidecar_index --programs /tmp/ras-review-smoke/hnsw_assets/sidecar_programs --positive minimalist --candidate-count 100 --topk 10 --repeats 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: review-smoke-results
+          path: /tmp/ras-review-smoke
