@@ -7,7 +7,7 @@ The visual demo is intentionally separated from the Rust systems benchmark:
 3. Natural-language soft constraints are parsed into reusable semantic predicates.
 4. The same held-out candidates are ranked side-by-side by Binary1-LS2-int4,
    PQ64, dense retrieval, FP32 semantic heads, and RSA2.
-5. A systems panel reports the paper's measured live-HNSW latency and theoretical
+5. A systems panel reports the reviewer-controlled live-HNSW result and persistent
    item/program payloads. Those numbers are not the Python UI latency.
 
 The visible catalog is the strict held-out test split, so the semantic heads are
@@ -69,15 +69,17 @@ METHOD_META = {
     },
 }
 
-# Fair full-data Rust HNSW benchmark: same normalized-dot geometry for the
-# library filtered baseline and our custom traversal, 100 queries, K=50, EF=128,
-# three active predicates. Live execution is inside the timed traversal.
+# Reviewer-controlled HNSW benchmark. Values are means over three predetermined
+# three-predicate sets, 1,000 queries per set, K=50 and EF=128. The over-fetch
+# column is the largest completed selectivity-aware budget (~2 * K/selectivity).
+# Traversal recall is relative to brute-force dense top-K under the SAME compiled
+# predicate, not end-to-end semantic relevance.
 SYSTEM_LATENCY_ROWS = [
-    {"eligible": "50%", "live_ms": 2.134, "filtered_hnsw_ms": 5.005, "live_recall@50": 0.9816, "filtered_recall@50": 0.9808},
-    {"eligible": "20%", "live_ms": 4.903, "filtered_hnsw_ms": 10.437, "live_recall@50": 0.9774, "filtered_recall@50": 0.9738},
-    {"eligible": "10%", "live_ms": 7.094, "filtered_hnsw_ms": 14.367, "live_recall@50": 0.9730, "filtered_recall@50": 0.9718},
-    {"eligible": "5%", "live_ms": 10.184, "filtered_hnsw_ms": 20.185, "live_recall@50": 0.9786, "filtered_recall@50": 0.9758},
-    {"eligible": "2%", "live_ms": 13.714, "filtered_hnsw_ms": 26.392, "live_recall@50": 0.9828, "filtered_recall@50": 0.9798},
+    {"eligible": "50%", "live_ms": 2.226, "overfetch_2x_ms": 1.615, "live_traversal_recall@50": 0.9833, "overfetch_2x_traversal_recall@50": 0.7923},
+    {"eligible": "20%", "live_ms": 4.580, "overfetch_2x_ms": 3.462, "live_traversal_recall@50": 0.9826, "overfetch_2x_traversal_recall@50": 0.7098},
+    {"eligible": "10%", "live_ms": 6.791, "overfetch_2x_ms": 5.953, "live_traversal_recall@50": 0.9794, "overfetch_2x_traversal_recall@50": 0.7180},
+    {"eligible": "5%", "live_ms": 9.820, "overfetch_2x_ms": 10.269, "live_traversal_recall@50": 0.9752, "overfetch_2x_traversal_recall@50": 0.7482},
+    {"eligible": "2%", "live_ms": 14.568, "overfetch_2x_ms": 20.142, "live_traversal_recall@50": 0.9778, "overfetch_2x_traversal_recall@50": 0.8420},
 ]
 
 LATENT_ALIASES = {
@@ -293,7 +295,16 @@ def systems_memory_table(n_items: int = 5_000_000, n_concepts: int = 100_000) ->
     keep = {"Binary1-LS2-int4", "PQ64 compiled linear", "RSA2 sparse LUT", "FP32 linear"}
     df = pd.DataFrame(memory_rows(n_items, n_concepts))
     df = df[df.method.isin(keep)].copy()
-    return df[["method", "item_B", "predicate_B", "item_payload_MB", "program_payload_MB", "total_payload_MB"]]
+    return df[[
+        "method",
+        "item_B",
+        "persistent_predicate_B",
+        "active_predicate_B",
+        "item_payload_MB",
+        "program_payload_MB",
+        "shared_payload_MB",
+        "total_payload_MB",
+    ]]
 
 
 def systems_latency_table() -> pd.DataFrame:
@@ -363,7 +374,7 @@ def build_app(state: DemoState):
                     "teacher_hits@k": int(truth[order].sum()) if semantic_used else np.nan,
                     "precision@k": float(truth[order].mean()) if semantic_used else np.nan,
                     "item_B": meta["item_bytes"],
-                    "predicate_B": meta["program_bytes"],
+                    "stored_predicate_B": meta["program_bytes"],
                 }
             )
 
@@ -419,23 +430,24 @@ def build_app(state: DemoState):
         )
 
         status = gr.Markdown()
-        metrics = gr.Dataframe(label="Held-out top-K quality + payload", interactive=False, wrap=True)
+        metrics = gr.Dataframe(label="Held-out top-K quality + persistent payload", interactive=False, wrap=True)
 
-        with gr.Accordion("Systems result: memory and live HNSW latency", open=True):
+        with gr.Accordion("Systems result: memory and reviewer-controlled HNSW", open=True):
             gr.Markdown(
-                "**Memory scenario:** 5M items + 100k independently compiled soft concepts. "
+                "**Memory scenario:** 5M items + 100k independently stored soft concepts; persistent and active program bytes are shown separately. "
                 "Payload excludes HNSW graph edges and container overhead.  \n"
-                "**Latency scenario:** full-data held-out search set, 100 queries, K=50, EF=128, same normalized-dot geometry, "
-                "three active predicates; Binary1 predicates execute inside the timed HNSW traversal."
+                "**Traversal scenario:** strict held-out graph, 1,000 queries per predicate set, three predetermined three-predicate sets, K=50, EF=128. "
+                "The comparison shown is the largest completed selectivity-aware over-fetch point (~2× K/selectivity). "
+                "No tested over-fetch point through 2× matched live Traversal Recall@50 within 0.005."
             )
             with gr.Row():
-                gr.Dataframe(value=systems_memory_table(), label="Joint item + concept memory", interactive=False, wrap=True)
-                gr.Dataframe(value=systems_latency_table(), label="Live semantic HNSW vs filtered HNSW", interactive=False, wrap=True)
+                gr.Dataframe(value=systems_memory_table(), label="Persistent item + concept payload", interactive=False, wrap=True)
+                gr.Dataframe(value=systems_latency_table(), label="Live semantic HNSW vs 2× over-fetch", interactive=False, wrap=True)
 
         gr.Markdown("## Main semantic comparison")
         with gr.Row():
             binary_gallery = gr.Gallery(label="Binary1-LS2-int4 · 56 B/item · 216 B/predicate", columns=3, height=560, object_fit="contain")
-            pq_gallery = gr.Gallery(label="PQ64 · 64 B/item · 65.5 KB/predicate", columns=3, height=560, object_fit="contain")
+            pq_gallery = gr.Gallery(label="PQ64 · 64 B/item · 1.55 KB stored head · 65.5 KB active LUT", columns=3, height=560, object_fit="contain")
 
         with gr.Accordion("More baselines", open=False):
             with gr.Row():
