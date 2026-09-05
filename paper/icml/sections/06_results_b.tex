@@ -49,15 +49,15 @@ The main benchmark is deliberately cross-modal: CLIP sees images, whereas every 
 
 \begin{table*}[t]
 \centering
-\caption{Cross-modal predicate quality averaged over three strict splits, with packed storage accounting. Program bytes are approximate serialized state per concept.}
+\caption{Cross-modal predicate quality averaged over three strict splits, with packed storage accounting. For PQ64, the first number is the persistent linear head; the second is the materialized active LUT used by the native executor.}
 \label{tab:predicate_finalists}
 \small
 \begin{tabular}{lrrrr}
 \toprule
-Method & Item B & Program B/concept & Mean F1 & Mean AP\\
+Method & Item B & Program B (stored/active) & Mean F1 & Mean AP\\
 \midrule
 FP32 linear & 1536 & 1548 & \textbf{.745} & \textbf{.805}\\
-PQ64 compiled linear & 64 & 65548 & .737 & .794\\
+PQ64 compiled linear & 64 & 1548 / 65548 & .737 & .794\\
 Binary1-LS2, FP32 weights & 56 & 1556 & .721 & .771\\
 Binary1-LS2, int4 weights & \textbf{56} & \textbf{216} & .721 & .770\\
 RSA4 sparse LUT & 192 & 3652 & .707 & .758\\
