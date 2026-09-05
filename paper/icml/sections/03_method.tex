@@ -104,7 +104,7 @@ An item with codes $(q_1,\ldots,q_{64})$ is scored by
 \widehat s_C^{\mathrm{PQ}}(x)=\beta_C+\sum_{m=1}^{64}L_{Cm}[q_m].
 \label{eq:pq_compiled}
 \end{equation}
-This preserves much of the FP32 linear quality, but the compiled predicate stores $64\times256$ FP32 LUT entries. In our accounting this is about 65,548 bytes/concept, over two orders of magnitude larger than Binary1-LS2-int4.
+The active scoring kernel used in our native benchmark materializes all $64\times256$ FP32 LUT entries, about 65,548 bytes including scalar state. That is an execution representation, not a mandatory persistent cost per concept: the system can store the 1,548-byte FP32 linear head $(w_C,\beta_C)$ plus one PQ codebook shared by all concepts, and construct $L_C$ when the concept is activated. We therefore report PQ64 as 1,548 bytes of persistent per-concept state and 65,548 bytes of active precompiled-LUT state.
 
 \subsection{Calibration and semantic algebra}
 Independently trained concept scores are not on a common evidence scale. On a held-out calibration split, fit a scalar map
