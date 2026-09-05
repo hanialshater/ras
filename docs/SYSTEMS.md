@@ -8,7 +8,7 @@ The semantic layer supports two serving modes:
 1. **Candidate sidecar** — ANN/exact filtering runs first, then semantic programs prune a candidate array.
 2. **Integrated HNSW** — dense similarity navigates the graph; the compiled semantic program decides whether a visited node is eligible for the result beam. Invalid nodes remain traversable.
 
-The second mode is now the stronger systems result.
+The second mode is the stronger systems result.
 
 ## 1. Data model
 
@@ -104,100 +104,126 @@ live compiled soft predicate
 valid result beam      still traversable
 ```
 
-Important design choice: **semantic score does not steer the graph priority**.
+Important design choice: **semantic score does not steer graph priority**.
 
-Experiments showed that direct `dense + λ * semantic` navigation damaged recall, and bounded two-hop bridge expansion added substantial work without a meaningful quality gain. Dense geometry owns navigation; semantics own eligibility.
+Experiments showed that direct `dense + λ * semantic` navigation damaged traversal recall, and bounded two-hop bridge expansion added substantial work without a meaningful quality gain. Dense geometry owns navigation; semantics own eligibility.
 
-The live Rust executable is:
+The reviewer executable is:
 
 ```text
-rust/semantic_engine/src/bin/semantic_hnsw_live.rs
+rust/semantic_engine/src/bin/semantic_hnsw_reviewer.rs
 ```
 
-It uses the same normalized-dot distance for both the `hnsw_rs` baseline and the extracted custom traversal, verifies unit-normalized input vectors, caches each semantic result once per query, and evaluates semantics only after a dense admissibility check.
+It uses normalized-dot geometry, builds the graph once per predicate set, materializes semantic truth once, computes dense query-to-item scores once per query, and then evaluates all semantic gates and over-fetch budgets inside that same process. `semantic_hnsw_live.rs` remains as the earlier single-condition controlled traversal harness.
 
-## 5. Fair live benchmark
+## 5. Reviewer-controlled benchmark
 
 Run:
 
 ```bash
-python -m experiments.semantic_hnsw_live_sweep \
+python -m experiments.semantic_hnsw_reviewer_sweep \
   --config configs/binary_bbq.yaml \
-  --output-dir results/semantic_hnsw_live_fair
+  --output-dir results/semantic_hnsw_reviewer \
+  --queries 1000
 ```
 
-Defaults:
+Public Colab:
 
 ```text
-100 queries
+notebooks/rsa_semantic_hnsw_reviewer_colab.ipynb
+```
+
+Protocol:
+
+```text
+strict held-out graph: ~15,426 items
+1000 queries / predicate set
+3 predetermined predicate sets
+3 active predicates / set
 K=50
 EF=128
 M=24
-three active predicates:
-  +minimalist
-  +office_appropriate
-  -technical_sporty
+efConstruction=200
 semantic eligibility: 50%, 20%, 10%, 5%, 2%
+completed over-fetch sweep: .75, 1, 1.5, 2 × K/selectivity
+extended harness: .75, 1, 1.5, 2, 3, 4, 6, 8 × K/selectivity
+matched-recall tolerance: .005
 ```
 
-The harness writes:
+Predicate sets:
 
 ```text
-gates.csv
-raw.csv
-summary.csv
-fairness.csv
-environment.json
++minimalist +office_appropriate -technical_sporty
++elegant +quiet_luxury -chunky
++retro +relaxed -office_appropriate
 ```
 
-and records repository commit, CPU model, Python/Rust versions, normalization statistics, and benchmark parameters.
+### Recall definition
 
-Checked-in paper summary:
+**Traversal Recall@50** compares an ANN result with brute-force dense top-K among items passing the **same compiled semantic predicate**. It measures search execution fidelity, not semantic relevance.
 
-```text
-paper/icml/data/semantic_hnsw_live_fair_full.csv
-```
+Exact live/materialized result-ID parity compares live program execution with the same custom traversal using precomputed semantic scores. It is a correctness check, not a relevance result.
 
-### Recorded fair result
+### Completed result through 2× over-fetch
 
-| Eligible | Live semantic HNSW | Materialized filtered HNSW | Live Recall@50 | Filtered Recall@50 |
+The largest completed selectivity-aware over-fetch point, averaged across the three predicate sets, is:
+
+| Eligible | Live Traversal Recall@50 | 2× over-fetch recall | Live ms | 2× over-fetch ms |
 |---:|---:|---:|---:|---:|
-| 50% | 2.13 ms | 5.00 ms | .9816 | .9808 |
-| 20% | 4.90 ms | 10.44 ms | .9774 | .9738 |
-| 10% | 7.09 ms | 14.37 ms | .9730 | .9718 |
-| 5% | 10.18 ms | 20.19 ms | .9786 | .9758 |
-| 2% | 13.71 ms | 26.39 ms | .9828 | .9798 |
+| 50% | .9833 | .7923 | 2.23 | 1.61 |
+| 20% | .9826 | .7098 | 4.58 | 3.46 |
+| 10% | .9794 | .7180 | 6.79 | 5.95 |
+| 5% | .9752 | .7482 | 9.82 | 10.27 |
+| 2% | .9778 | .8420 | 14.57 | 20.14 |
 
-The actual compiled program adds roughly **108–114 ns per predicate invocation** in this run and exactly matches the result IDs of the free-materialized custom traversal.
+**No tested over-fetch point through 2× reaches live traversal recall within .005 in any of the 15 predicate-set × selectivity conditions.** Therefore this completed run does not support a matched-recall latency ratio.
 
-This is a controlled, single-thread research result, not a production p99 claim.
+At 50–10% eligibility, the largest tested over-fetch budget is faster but materially lower recall. At 5% and 2%, live traversal is both faster and substantially higher recall than that 2× point.
 
-## 6. Why post-filtering is insufficient
+The public harness extends the sweep to 3×, 4×, 6× and 8× specifically to locate a genuine matched-recall point. Those results must be measured before making a universal comparison with over-fetch.
 
-At low selectivity, retrieving a fixed dense pool and filtering afterward loses most valid nearest neighbors. In the same full-data experiment, post-filter Recall@50 falls from .927 at 50% eligibility to .135 at 2% eligibility.
+Checked-in aggregate:
 
-Filter-aware traversal keeps invalid points available for navigation while preventing them from consuming the valid result beam.
+```text
+paper/icml/data/semantic_hnsw_reviewer_2x_summary.csv
+```
 
-## 7. Joint item + program memory
+## 6. What does the semantic program itself cost?
+
+The controlled comparison is:
+
+```text
+semantic_hnsw_live
+minus
+custom_hnsw_materialized
+```
+
+Both use the same custom traversal and graph. The difference isolates the incremental cost of executing the real Binary1-LS2-int4 programs online.
+
+Across the completed reviewer conditions, the estimate is approximately **96–134 ns per predicate invocation**. The same scalar 384-D normalized-dot kernel costs **617.155 ns** on the recorded Intel Xeon 2.20 GHz CPU, so one predicate invocation is roughly **0.16–0.22 dense-distance equivalents** in this implementation.
+
+This is an incremental traversal estimate, not a standalone instruction benchmark.
+
+## 7. Persistent item + program memory
 
 For N items and C compiled concepts:
 
 ```text
-M = N * item_bytes + C * program_bytes
+persistent payload = N * item_bytes + C * stored_program_bytes + shared_bytes
 ```
 
 Illustrative 5M-item / 100k-concept payload:
 
-| Method | Items | Programs | Total |
+| Method | Items | Persistent programs/store | Total |
 |---|---:|---:|---:|
-| Binary1-LS2-int4 | 280 MB | 21.6 MB | **301.6 MB** |
-| RSA2 sparse LUT | 480 MB | 58 MB | 538 MB |
-| PQ64 compiled linear | 320 MB | 6,554.8 MB | 6,874.8 MB |
-| FP32 linear | 7,680 MB | 154.8 MB | 7,834.8 MB |
+| Binary1-LS2-int4 | 280.0 MB | 21.6 MB | **301.6 MB** |
+| PQ64 + compact linear heads | 320.0 MB | ~155.2 MB | ~475.2 MB |
+| RSA2 sparse LUT | 480.0 MB | 58.0 MB | 538.0 MB |
+| FP32 linear | 7,680.0 MB | 154.8 MB | 7,834.8 MB |
 
-These figures are representation payload only. They exclude graph edges, allocators, containers, and offline model weights.
+PQ64 requires 64 B/item. Persistently, a semantic concept can remain a 1,548-byte FP32 linear head plus one ~0.393 MB codebook shared by all concepts. The native scoring kernel materializes a **65,548-byte LUT per active concept**, but that is activation-time state rather than mandatory persistent state.
 
-The source of truth is `ras.accounting`.
+These figures are representation payload only. They exclude graph edges, allocators, containers, and offline model weights. The source of truth for current persistent accounting is `ras.accounting`.
 
 ## 8. Composition and early exit
 
@@ -225,6 +251,8 @@ Programs should be tied to an index generation in production.
 
 The current result establishes that learned soft predicates are cheap enough to participate directly in ANN traversal. It does not yet establish:
 
+- the matched-recall frontier beyond 2× over-fetch;
+- QPS/core on a million-scale graph;
 - production mmap/segment behavior;
 - p50/p95/p99 under concurrency;
 - distributed RPC overhead;
