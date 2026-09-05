@@ -55,21 +55,23 @@ The original mechanism run measured correlation 0.9102 between source cosine sim
 For $D=384$, source FP32 embeddings require 1,536 bytes/item. The final benchmark uses the following packed accounting:
 \begin{center}
 \small
-\begin{tabular}{lrr}
+\begin{tabular}{lrrr}
 \toprule
-Method & Item B & Program B/concept\\
+Method & Item B & Stored program B & Active program B\\
 \midrule
-FP32 linear & 1536 & 1548\\
-PQ64 compiled linear & 64 & 65548\\
-Binary1-LS2-int4 & 56 & 216\\
-Binary1-LS2-FP32 & 56 & 1556\\
-RSA1 sparse & 48 & 292\\
-RSA2 sparse & 96 & 580\\
-RSA4 sparse & 192 & 3652\\
+FP32 linear & 1536 & 1548 & 1548\\
+PQ64 compiled linear & 64 & 1548 & 65548\\
+Binary1-LS2-int4 & 56 & 216 & 216\\
+Binary1-LS2-FP32 & 56 & 1556 & 1556\\
+RSA1 sparse & 48 & 292 & 292\\
+RSA2 sparse & 96 & 580 & 580\\
+RSA4 sparse & 192 & 3652 & 3652\\
 \bottomrule
 \end{tabular}
 \end{center}
-Binary1 stores 48 bytes of sign bits plus two FP32 reconstruction levels. Its int4 predicate stores 192 bytes of packed weights plus quantization/precomputed scalar state. PQ64 stores 64 one-byte subcodes per item; its predicate stores $64\times256$ FP32 table values plus scalar state. Sparse \rsa program sizes count FP32 LUT values, unsigned 16-bit coordinate indices, intercept, and scalar calibration parameters. These numbers intentionally exclude generic container and allocator overhead.
+Binary1 stores 48 bytes of sign bits plus two FP32 reconstruction levels. Its int4 predicate stores 192 bytes of packed weights plus quantization/precomputed scalar state. PQ64 stores 64 one-byte subcodes per item. The native PQ executor uses $64\times256$ FP32 table values plus scalar state, giving 65,548 bytes of active LUT state per predicate. That table need not be persisted for every concept: the underlying 384-dimensional FP32 linear head is 1,548 bytes and can be combined with one shared PQ codebook to materialize a LUT on activation. Sparse \rsa program sizes count FP32 LUT values, unsigned 16-bit coordinate indices, intercept, and scalar calibration parameters. These numbers intentionally exclude generic container and allocator overhead.
+
+For PQ64 with $m=64$, 8-bit subcodes, and $D=384$, the shared float codebook contains $64\times256\times6$ values, or 393,216 bytes. Thus the illustrative 5M-item/100k-concept persistent accounting in Table~\ref{tab:vocabmemory} charges 320\,MB for item codes, 154.8\,MB for the 100k linear heads, and about 0.4\,MB for the shared codebook. It does not charge 65.5\,KB times 100k as permanent state.
 
 \subsection{Binary execution identity}
 For the int4 binary program, the native kernel uses six 64-bit words per item and four predicate bit planes. The weighted positive-side sum is obtained from four AND/popcount reductions as in Eq.~\eqref{eq:popcount}; the two per-item reconstruction levels then recover the approximate linear score through Eq.~\eqref{eq:binary_score}. This is the kernel benchmarked by the Rust \code{actual} executor.
@@ -77,4 +79,6 @@ For the int4 binary program, the native kernel uses six 64-bit words per item an
 \subsection{Reproducibility}
 The final quality comparison is produced by \path{experiments/binary_bbq_predicates.py} with \path{configs/binary_bbq.yaml}. The reported result bundle is \texttt{20260904T125016Z\_binary\_3ad715855d}, generated at Git commit \texttt{2b0f5ed}. It contains all 44,072 products, seeds 7/17/27, a top-5,000 retrieval pool, 200 fit-generated compound queries per seed, and the full per-query, predicate, paired-delta, and Pareto outputs. The quality run reports an NVIDIA A100-SXM4-40GB for embedding/teacher computation.
 
-The same run exports first-seed real held-out representations and learned programs. \path{experiments/export_native_finalists.py} converts them to raw binary assets, and \path{rust/semantic_engine/src/bin/actual.rs} benchmarks FP32, PQ64, Binary1-LS2-int4, and RSA2 on a single CPU thread. The source test set has 15,426 items; rows are physically repeated only to construct the 500k-item resident working set. Candidate sets contain 5k, 20k, or 100k sampled resident indices, predicate counts are 1/2/4/8, and reported timings are medians of five repetitions. The public Colab launcher is \path{notebooks/rsa_finalists_full_native_colab.ipynb}.
+The same run exports first-seed real held-out representations and learned programs. \path{experiments/export_native_finalists.py} converts them to raw binary assets, and \path{rust/semantic_engine/src/bin/actual.rs} benchmarks FP32, PQ64, Binary1-LS2-int4, and RSA2 on a single CPU thread. The source test set has 15,426 items; rows are physically repeated only to construct the 500k-item resident working set. Candidate sets contain 5k, 20k, or 100k sampled resident indices, predicate counts are 1/2/4/8, and reported timings are medians of five repetitions. The public Colab launcher is \path{notebooks/rsa_finalists_full_native_colab.ipynb}. The FP32 native path is a scalar reference loop and is not used to claim a general speedup over optimized dense linear algebra.
+
+The reviewer-controlled HNSW experiment is produced by \path{experiments/semantic_hnsw_reviewer_sweep.py}. The focused exporter \path{experiments/export_hnsw_assets.py} writes only the normalized held-out retrieval vectors, Binary1-LS2 item sidecar, and eight calibrated semantic programs needed by the graph benchmark. The Rust executable \path{rust/semantic_engine/src/bin/semantic_hnsw_reviewer.rs} builds one HNSW graph per predicate set, computes brute-force dense scores once per query, and sweeps all five selectivity gates and all requested over-fetch budgets inside that process. The completed result uses three predetermined three-predicate sets, 1,000 queries each, $K=50$, $ef=128$, $M=24$, and $efConstruction=200$. Traversal recall is defined as recall of brute-force dense top-$K$ among items passing the same compiled semantic predicate. The public Colab is \path{notebooks/rsa_semantic_hnsw_reviewer_colab.ipynb}.
