@@ -4,12 +4,12 @@ Table~\ref{tab:pareto20} summarizes the main 44,072-product benchmark at 20\% ca
 
 \begin{table*}[t]
 \centering
-\caption{Main independent-teacher result at 20\% retention over 600 query--split cases. Recall and purity are measured within the exact-filtered top-5,000 ANN pool.}
+\caption{Main independent-teacher result at 20\% retention over 600 query--split cases. Recall and purity are measured within the exact-filtered top-5,000 ANN pool. For PQ64, ``stored/active'' separates the compact persistent linear head from the materialized lookup table used by the native executor.}
 \label{tab:pareto20}
 \small
 \begin{tabular}{lrrrr}
 \toprule
-Method & Item B & Program B/concept & Recall & Purity\\
+Method & Item B & Program B (stored/active) & Recall & Purity\\
 \midrule
 Dense MiniLM & 1536 & 0 & .207 & .425\\
 Zero-shot prompt difference & 1536 & 1536 & .249 & .470\\
@@ -17,7 +17,7 @@ RSA1 centered random & 48 & 292 & .304 & .538\\
 RSA2 sparse LUT & 96 & 580 & .321 & .561\\
 RSA4 sparse LUT & 192 & 3652 & .330 & .571\\
 Binary1-LS2-int4 & \textbf{56} & \textbf{216} & .337 & .578\\
-PQ64 compiled linear & 64 & 65548 & .352 & .594\\
+PQ64 compiled linear & 64 & 1548 / 65548 & .352 & .594\\
 FP32 linear & 1536 & 1548 & \textbf{.363} & \textbf{.606}\\
 Oracle & -- & -- & .609 & .888\\
 \bottomrule
@@ -30,30 +30,26 @@ The FP32 linear proxy reaches 0.363 recall. Measured as recovery of the incremen
 \begin{equation}
 \frac{0.3365-0.2075}{0.3626-0.2075}=0.832,
 \end{equation}
-PQ64 captures 0.932, and RSA4 captures 0.791. Thus the gap between Binary1-LS2-int4 and PQ64 is 0.0155 absolute recall. In exchange, the binary program is about
-\begin{equation}
-\frac{65548}{216}=303.5
-\end{equation}
-times smaller and the item representation is 56 rather than 64 bytes.
+PQ64 captures 0.932, and RSA4 captures 0.791. Thus the gap between Binary1-LS2-int4 and PQ64 is 0.0155 absolute recall. The correct storage comparison is subtler than the fully materialized native format suggests. Binary1-LS2-int4 needs about 216 bytes of persistent and active program state. PQ64 can persist the same 1,548-byte FP32 linear head used by the semantic proxy plus one shared PQ codebook, then materialize the $64\times256$ float lookup table only when the predicate is activated. The 65,548-byte number is therefore an \emph{active precompiled-LUT representation}, not an intrinsic persistent cost per PQ concept.
 
 \begin{table}[t]
 \centering
-\caption{Joint payload memory for an illustrative 5M-item catalog with 100k compiled semantic concepts. Decimal MB; excludes HNSW graph edges and container overhead.}
+\caption{Illustrative persistent semantic payload for 5M items and 100k compiled concepts. Decimal MB; excludes HNSW graph edges and container overhead. PQ64 includes 100k compact linear heads plus one shared float codebook, not one persistent 65.5\,KB LUT per concept.}
 \label{tab:vocabmemory}
 \small
 \begin{tabular}{lrrr}
 \toprule
-Method & Items MB & Programs MB & Total MB\\
+Method & Items MB & Programs/store MB & Total MB\\
 \midrule
 Binary1-LS2-int4 & 280.0 & 21.6 & \textbf{301.6}\\
+PQ64 linear heads & 320.0 & 155.2 & 475.2\\
 RSA2 sparse LUT & 480.0 & 58.0 & 538.0\\
-PQ64 compiled linear & 320.0 & 6554.8 & 6874.8\\
 FP32 linear & 7680.0 & 154.8 & 7834.8\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:vocabmemory} makes the two-sided compression objective concrete. PQ64 is slightly smaller per item, but its compiled lookup program scales poorly with concept vocabulary. Binary1-LS2-int4 remains small on both axes: 100k independently deployable programs occupy 21.6\,MB of scoring payload, so the item plus program payload is about 302\,MB in this illustrative configuration. This is arithmetic from the measured representation formats, not a claim about total resident-set size in a production service.
+Table~\ref{tab:vocabmemory} makes the two-sided compression objective concrete without treating PQ lookup materialization as mandatory persistent state. Binary1-LS2-int4 remains the smallest joint payload in this illustrative regime. PQ64 is only eight bytes/item larger and its compact persistent head is about 7.2$\times$ larger than the binary program; its 65.5\,KB lookup table is an activation-time representation. The present native PQ benchmark uses those pre-materialized LUTs and therefore does not measure their construction cost. The table is representation arithmetic, not a claim about total resident-set size in a production service.
 
 \begin{figure*}[t]
 \centering
@@ -92,16 +88,16 @@ Table~\ref{tab:vocabmemory} makes the two-sided compression objective concrete. 
 A raw stratification by the number of latent predicates suggests larger semantic gains for deeper conjunctions. However, deeper conjunctions also have lower teacher prevalence inside the candidate pool, which makes fixed-budget pruning easier. We therefore re-analyzed the per-query 20\% recall deltas with pool prevalence as a covariate. In an exploratory OLS regression of method-minus-dense recall on latent count and teacher prevalence, the latent-count coefficient is $-0.0033$ for Binary1-LS2-int4 ($p=0.58$) and $-0.0026$ for RSA4 ($p=0.67$). We therefore find no evidence in this benchmark that composition depth itself increases the advantage after accounting for prevalence, and we do not use the raw depth trend as a headline result.
 
 \subsection{Native execution on real codes and programs}
-The quality experiment exports the actual first-split held-out representations and learned programs to a Rust executor. Table~\ref{tab:native} reports throughput at a 100k-candidate pool with a 500k-item resident working set. PQ64 is fastest at this large pool across all predicate counts. Binary1-LS2-int4 closes the gap as more predicates are fused: with eight active predicates it reaches 1.98M candidates/s, within 3.3\% of PQ64's 2.04M/s and about 4.8$\times$ the FP32 rate.
+The quality experiment exports the actual first-split held-out representations and learned programs to a Rust executor. Table~\ref{tab:native} reports throughput at a 100k-candidate pool with a 500k-item resident working set. PQ64 is fastest at this large pool across all predicate counts. Binary1-LS2-int4 closes the gap as more predicates are fused: with eight active predicates it reaches 1.98M candidates/s, within 3.3\% of PQ64's 2.04M/s.
 
 \begin{table}[t]
 \centering
-\caption{Single-threaded native throughput at 100k candidates (million candidates/s). Real held-out rows/programs, 500k resident items, median of five repetitions.}
+\caption{Single-threaded native throughput at 100k candidates (million candidates/s). Real held-out rows/programs, 500k resident items, median of five repetitions. The FP32 column is a scalar reference implementation rather than an optimized BLAS baseline.}
 \label{tab:native}
 \small
 \begin{tabular}{rcccc}
 \toprule
-Predicates & FP32 & PQ64 & Binary1-int4 & RSA2\\
+Predicates & FP32 scalar & PQ64 & Binary1-int4 & RSA2\\
 \midrule
 1 & 1.301 & \textbf{7.010} & 5.241 & 6.778\\
 2 & 1.042 & \textbf{5.812} & 4.534 & 4.760\\
@@ -111,31 +107,33 @@ Predicates & FP32 & PQ64 & Binary1-int4 & RSA2\\
 \end{tabular}
 \end{table}
 
-These measurements sharpen the systems picture. PQ64 combines excellent compressed quality with the best large-pool throughput, but pays a large per-predicate program store. Binary1-LS2-int4 trades 0.0155 recall at 20\% retention for 303$\times$ smaller programs and slightly smaller item codes while remaining close to PQ throughput for multi-predicate execution.
+These measurements isolate the resident scoring kernels rather than end-to-end search. PQ64 combines the best compressed quality with the best large-pool throughput in this implementation, while Binary1-LS2-int4 remains close at higher predicate counts and uses a much smaller persistent program. We do not interpret the ratio to the scalar FP32 loop as a general speedup over optimized dense linear algebra.
 
 \subsection{Live semantic predicates inside HNSW}
 The preceding microkernel asks how quickly a fixed candidate array can be scored. We next move the compiled predicate into ANN traversal itself. Dense similarity remains the HNSW navigation score; semantic programs only decide whether a visited node may enter the valid result beam. Semantically invalid nodes remain traversable, so the soft predicate does not disconnect the graph. A dense bound is checked before semantic execution, which avoids touching the predicate program for neighbors that cannot improve the current valid beam.
 
-Table~\ref{tab:livehnsw} reports the fair full-data experiment. The indexed set is the strict held-out split of the 44,072-product source catalog. We run 100 deterministic query items with $K=50$, $ef=128$, and three active semantic predicates. The library filtered-HNSW baseline and our custom traversal use the same HNSW graph and the same normalized-dot distance. Predicate thresholds are selected to produce target eligibility fractions from 50\% to 2\%. The filtered baseline uses a materialized semantic predicate; the live method includes the actual Binary1-LS2-int4 program execution inside the timed traversal.
+The reviewer-controlled benchmark uses the strict first held-out split of the 44,072-product source catalog, 1,000 deterministic query items, $K=50$, $ef=128$, and three predetermined sets of three active semantic predicates. For each predicate set, thresholds induce target eligibility fractions of 50\%, 20\%, 10\%, 5\%, and 2\%. Traversal recall is measured against brute-force dense top-$K$ among items passing the \emph{same compiled predicate}; it is therefore a search-execution metric rather than end-to-end semantic relevance. The comparison baseline performs ordinary HNSW search for approximately $mK/s$ candidates and materializes the same semantic predicate only after retrieval, where $s$ is the actual eligible fraction and $m\in\{0.75,1,1.5,2\}$ in the completed run.
 
 \begin{table*}[t]
 \centering
-\caption{Live soft predicates inside HNSW. Mean latency in ms over 100 queries; same normalized-dot graph/geometry for both HNSW traversals. Post-filter recall is included to show the selectivity failure mode. Absolute latency is prototype-specific; the within-run comparison is the intended result.}
+\caption{Reviewer-controlled live semantic HNSW result. Values are means over three predetermined predicate sets, each evaluated on 1,000 queries. ``2$\times$ OF'' is the largest completed selectivity-aware over-fetch budget, approximately $2K/s$. None of the 15 predicate-set/selectivity conditions reaches live recall within 0.005 at any tested over-fetch point.}
 \label{tab:livehnsw}
 \small
 \begin{tabular}{rrrrrrrr}
 \toprule
-Eligible & Post recall & Live recall & Filtered recall & Live ms & Live p95 & Filtered ms & Live/filtered\\
+Eligible & Live trav. recall & 2$\times$ OF recall & Recall gap & Live ms & 2$\times$ OF ms & OF/live & Pred. ns\\
 \midrule
-50\% & .9272 & .9816 & .9808 & 2.13 & 4.17 & 5.00 & .43\\
-20\% & .6094 & .9774 & .9738 & 4.90 & 9.48 & 10.44 & .47\\
-10\% & .3960 & .9730 & .9718 & 7.09 & 12.29 & 14.37 & .49\\
-5\%  & .2566 & .9786 & .9758 & 10.18 & 16.10 & 20.19 & .50\\
-2\%  & .1348 & .9828 & .9798 & 13.71 & 19.48 & 26.39 & .52\\
+50\% & .9833 & .7923 & -.1910 & 2.23 & 1.61 & .73 & 102\\
+20\% & .9826 & .7098 & -.2728 & 4.58 & 3.46 & .76 & 118\\
+10\% & .9794 & .7180 & -.2614 & 6.79 & 5.95 & .88 & 124\\
+5\%  & .9752 & .7482 & -.2270 & 9.82 & 10.27 & 1.05 & 130\\
+2\%  & .9778 & .8420 & -.1357 & 14.57 & 20.14 & 1.38 & 132\\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-Two observations matter. First, post-filtering collapses as the learned predicate becomes selective, while both filter-aware traversals preserve roughly 0.97--0.98 Recall@50. Second, the live compiled-predicate traversal uses 43--52\% of the mean latency of the materialized filtered-HNSW baseline in this implementation, despite paying the semantic-program cost online. Across the sweep, live execution exactly matches the result IDs of the corresponding materialized custom traversal. The incremental program cost is stable at roughly 108--114\,ns per predicate evaluation; at 2\% selectivity the live traversal performs about 28.1k predicate evaluations and adds 3.11\,ms over the same custom traversal with free materialized semantics.
+The result is more informative than the earlier fixed-postfilter comparison. At 50--10\% selectivity, a $2\times$ over-fetch budget is somewhat faster than live traversal, but it gives up 0.19--0.27 absolute Traversal Recall@50. At 5\% and 2\% selectivity, live traversal is both faster and substantially higher recall than that same budget. Most importantly, \emph{no} tested over-fetch point comes within the predeclared 0.005 recall tolerance of live traversal in any of the 15 conditions. We therefore do not report a matched-recall latency ratio from this run; the correct statement is that the completed over-fetch range failed to reach the live-recall operating point.
 
-The result should not be read as a universal claim that a custom HNSW implementation is twice as fast as every filtered ANN system. It is evidence for the narrower point needed by this paper: the tiny compiled predicate is cheap enough to live inside graph traversal, and doing so avoids the severe recall loss of post-filtering at low semantic selectivity. The exact summary used for Table~\ref{tab:livehnsw} is checked into \path{paper/icml/data/semantic_hnsw_live_fair_full.csv}.
+The live method reaches between 0.955 and 0.992 Traversal Recall@50 across the individual conditions. Exact result-ID parity with the corresponding custom materialized traversal is 1.0 and is treated only as a correctness check. The incremental live-minus-materialized custom-traversal cost is approximately 96--134\,ns per predicate invocation. On the same Intel Xeon 2.20\,GHz CPU, the scalar 384-D normalized-dot kernel costs 617\,ns, so the incremental predicate cost is about 0.16--0.22 of one dense distance computation. This ratio is stable enough across predicate sets and selectivities to support the narrower claim that predicate execution itself is not the dominant cost of the traversal.
+
+An extended sweep to larger over-fetch budgets is implemented in the public reviewer harness so that a true matched-recall point can be found rather than inferred. Until that sweep is run, the paper makes no claim that live traversal is faster than every possible post-filter over-fetch configuration. The checked-in summary used for Table~\ref{tab:livehnsw} is \path{paper/icml/data/semantic_hnsw_reviewer_2x_summary.csv}.
