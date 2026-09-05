@@ -1,13 +1,13 @@
 """Export real learned finalist representations/programs for native CPU benchmarking.
 
-Besides the historical flat finalist files, this script now writes a portable
-Binary1-LS2-int4 semantic sidecar:
+Besides the historical flat finalist files, this script writes a portable
+Binary1-LS2-int4 semantic sidecar and both forms of the PQ64 semantic program:
 
-    <out>/sidecar_index/
-    <out>/sidecar_programs/<concept>/
+* persistent: one 384-D FP32 linear head per concept + one shared PQ codebook;
+* active native: one materialized 64x256 FP32 LUT per active concept.
 
-The sidecar is directly consumable by ``ras.SemanticExecutor`` and the Rust
-``sidecar`` binary.  ANN retrieval and exact filtering remain external.
+This distinction prevents the native LUT footprint from being mistaken for a
+mandatory persistent cost per concept.
 """
 from __future__ import annotations
 
@@ -53,7 +53,13 @@ def _pack2(q: np.ndarray) -> np.ndarray:
     ).astype(np.uint8)
 
 
-def _compile_pq_native(xfit: np.ndarray, xtest: np.ndarray, coefs: np.ndarray, intercepts: np.ndarray, cfg):
+def _compile_pq_native(
+    xfit: np.ndarray,
+    xtest: np.ndarray,
+    coefs: np.ndarray,
+    intercepts: np.ndarray,
+    cfg,
+):
     try:
         import faiss
     except ImportError as e:
@@ -72,8 +78,17 @@ def _compile_pq_native(xfit: np.ndarray, xtest: np.ndarray, coefs: np.ndarray, i
     centroids = faiss.vector_to_array(pq.centroids).reshape(m, ksub, dsub).astype(np.float32)
     luts = []
     for w in coefs:
-        luts.append(np.einsum("mkd,md->mk", centroids, w.reshape(m, dsub), optimize=True).astype(np.float32))
-    return codes, np.stack(luts), np.asarray(intercepts, dtype=np.float32)
+        luts.append(
+            np.einsum(
+                "mkd,md->mk", centroids, w.reshape(m, dsub), optimize=True
+            ).astype(np.float32)
+        )
+    return (
+        codes,
+        np.stack(luts),
+        np.asarray(intercepts, dtype=np.float32),
+        centroids,
+    )
 
 
 def _serialize_rsa2(programs: dict):
@@ -82,7 +97,10 @@ def _serialize_rsa2(programs: dict):
     for name in names:
         p = programs[name]
         if len(p["unary_idx"]) != 24 or len(p["pair_idx"]) != 2:
-            raise RuntimeError(f"Expected 24 unary + 2 pair terms for {name}, got {len(p['unary_idx'])}+{len(p['pair_idx'])}")
+            raise RuntimeError(
+                f"Expected 24 unary + 2 pair terms for {name}, "
+                f"got {len(p['unary_idx'])}+{len(p['pair_idx'])}"
+            )
         unary_idx.append(p["unary_idx"])
         unary_tables.append(p["unary_tables"])
         pair_idx.append(p["pair_idx"])
@@ -120,16 +138,22 @@ def export(config_path: str, out_dir: str) -> Path:
     )
 
     # FP32 supervised semantic heads.
-    _, _, coefs, intercepts = fit_linear_proxy(xfit, xcal, xtest, yfit, ycal, ytest, seed)
+    _, _, coefs, intercepts = fit_linear_proxy(
+        xfit, xcal, xtest, yfit, ycal, ytest, seed
+    )
     _write(root / "fp32_items.f32", xtest, np.float32)
     _write(root / "fp32_weights.f32", coefs, np.float32)
     _write(root / "fp32_intercepts.f32", intercepts, np.float32)
 
-    # PQ64 compiled linear heads using real PQ codes and codebooks.
-    pq_codes, pq_luts, pq_intercepts = _compile_pq_native(xfit, xtest, coefs, intercepts, cfg)
+    # PQ64: export both compact persistent state and the materialized native LUT.
+    pq_codes, pq_luts, pq_intercepts, pq_codebook = _compile_pq_native(
+        xfit, xtest, coefs, intercepts, cfg
+    )
     _write(root / "pq64_codes.u8", pq_codes, np.uint8)
     _write(root / "pq64_luts.f32", pq_luts, np.float32)
     _write(root / "pq64_intercepts.f32", pq_intercepts, np.float32)
+    _write(root / "pq64_weights.f32", coefs, np.float32)
+    _write(root / "pq64_codebook.f32", pq_codebook, np.float32)
 
     # BBQ-inspired centered sign bits + per-item LS2 corrections + int4 query.
     bbq = build_centered_binary_code(
@@ -145,7 +169,10 @@ def export(config_path: str, out_dir: str) -> Path:
     wscale = np.asarray(bbq_export["weight_scale"], dtype=np.float32)
     decoded = wlo[:, None] + wscale[:, None] * qweights.astype(np.float32)
     sum_w = decoded.sum(axis=1).astype(np.float32)
-    base = (np.asarray(intercepts, dtype=np.float32) + decoded @ bbq.centroid.astype(np.float32)).astype(np.float32)
+    base = (
+        np.asarray(intercepts, dtype=np.float32)
+        + decoded @ bbq.centroid.astype(np.float32)
+    ).astype(np.float32)
     _write(root / "bbq_bits.u8", pack_document_bits(bbq.Q_test), np.uint8)
     _write(root / "bbq_corrections.f32", bbq.correction_test, np.float32)
     _write(root / "bbq_weight_bitplanes.u8", bbq_export["bitplanes"], np.uint8)
@@ -192,14 +219,46 @@ def export(config_path: str, out_dir: str) -> Path:
     _write(root / "rsa2_pair_tables.f32", pt, np.float32)
     _write(root / "rsa2_intercepts.f32", bi, np.float32)
 
+    pq_shared_codebook_bytes = int(np.asarray(pq_codebook, dtype=np.float32).nbytes)
     manifest = {
         "source_items": int(len(xtest)),
         "embedding_dim": int(xtest.shape[1]),
         "concepts": [s["name"] for s in LATENT_SPECS],
         "n_concepts": len(LATENT_SPECS),
         "seed": seed,
-        "bytes_per_item": {"fp32_linear": 1536, "pq64": 64, "bbq1_ls2_int4q": 56, "rsa2": 96},
-        "program_bytes_per_concept": {"fp32_linear": 1548, "pq64": 65548, "bbq1_ls2_int4q": 216, "rsa2": 580},
+        "bytes_per_item": {
+            "fp32_linear": 1536,
+            "pq64": 64,
+            "bbq1_ls2_int4q": 56,
+            "rsa2": 96,
+        },
+        "persistent_program_bytes_per_concept": {
+            "fp32_linear": 1548,
+            "pq64": 1548,
+            "bbq1_ls2_int4q": 216,
+            "rsa2": 580,
+        },
+        "active_program_bytes_per_concept": {
+            "fp32_linear": 1548,
+            "pq64": 65548,
+            "bbq1_ls2_int4q": 216,
+            "rsa2": 580,
+        },
+        "shared_representation_bytes": {"pq64_codebook": pq_shared_codebook_bytes},
+        # Backward-compatible key for native-executor consumers. It means ACTIVE
+        # state, not mandatory persistent state.
+        "program_bytes_per_concept": {
+            "fp32_linear": 1548,
+            "pq64": 65548,
+            "bbq1_ls2_int4q": 216,
+            "rsa2": 580,
+        },
+        "pq64": {
+            "persistent_head": "pq64_weights.f32 + pq64_intercepts.f32",
+            "shared_codebook": "pq64_codebook.f32",
+            "active_lut": "pq64_luts.f32",
+            "note": "The 65,548-byte LUT is activation-time state and can be materialized from the compact head plus shared codebook.",
+        },
         "portable_sidecar": {
             "index": "sidecar_index",
             "programs": "sidecar_programs",
