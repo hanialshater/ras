@@ -31,7 +31,6 @@ import time
 import numpy as np
 import pandas as pd
 
-from experiments.export_hnsw_assets import export as export_hnsw_assets
 from experiments.semantic_hnsw_live_sweep import (
     _cpu_model,
     _git_commit,
@@ -152,7 +151,7 @@ def _annotate_run(
     )
     out = out.rename(columns={"overfetch_multiplier": "requested_overfetch_multiplier"})
     out["overfetch_multiplier"] = np.where(
-        out.method.eq("hnsw_overfetch_materialized"),
+        out.method.str.endswith("overfetch_materialized"),
         out.ask.astype(float) * out.actual_fraction.astype(float) / float(k),
         0.0,
     )
@@ -167,12 +166,14 @@ def _summarize(raw: pd.DataFrame) -> pd.DataFrame:
         "requested_overfetch_multiplier",
         "overfetch_multiplier",
         "ask",
+        "ef_search",
         "method",
     ]
     return (
         raw.groupby(keys, dropna=False)
         .agg(
-            queries=("query_id", "count"),
+            queries=("query_id", "nunique"),
+            timing_samples=("query_id", "count"),
             mean_latency_ms=("latency_ms", "mean"),
             p50_latency_ms=("latency_ms", "median"),
             p95_latency_ms=("latency_ms", lambda x: np.quantile(x, 0.95)),
@@ -195,7 +196,7 @@ def _pair_rows(summary: pd.DataFrame) -> pd.DataFrame:
     ):
         live_rows = g[g.method.eq("semantic_hnsw_live")]
         mat_rows = g[g.method.eq("custom_hnsw_materialized")]
-        over_rows = g[g.method.eq("hnsw_overfetch_materialized")]
+        over_rows = g[g.method.str.endswith("overfetch_materialized")]
         if len(live_rows) != 1 or len(mat_rows) != 1:
             raise RuntimeError(
                 f"expected one live/materialized row for {name} @ {target}, "
@@ -216,6 +217,8 @@ def _pair_rows(summary: pd.DataFrame) -> pd.DataFrame:
                     ),
                     "overfetch_multiplier": float(over.overfetch_multiplier),
                     "ask": int(over.ask),
+                    "ef_search": int(over.ef_search),
+                    "overfetch_method": str(over.method),
                     "live_ms": float(live.mean_latency_ms),
                     "overfetch_ms": float(over.mean_latency_ms),
                     "live_traversal_recall": float(live.traversal_recall_at_50),
@@ -238,7 +241,7 @@ def _pair_rows(summary: pd.DataFrame) -> pd.DataFrame:
 def _matched_frontier(pairs: pd.DataFrame, tolerance: float) -> pd.DataFrame:
     """Pick the fastest over-fetch point whose recall is within tolerance of live."""
     rows: list[pd.Series] = []
-    for (_, _), g in pairs.groupby(["predicate_set", "target_fraction"]):
+    for _, g in pairs.groupby(["predicate_set", "target_fraction", "overfetch_method"]):
         ok = g[g.overfetch_minus_live_recall >= -tolerance]
         if len(ok):
             rows.append(ok.sort_values(["overfetch_ms", "ask"]).iloc[0])
@@ -260,12 +263,15 @@ def run(args: argparse.Namespace) -> Path:
     repo_root = Path(args.repo_root).resolve()
     out = Path(args.output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    assets = out / "assets"
+    assets = Path(args.assets_dir).resolve() if args.assets_dir else out / "assets"
+    if args.force_export and args.assets_dir:
+        raise ValueError("--force-export cannot delete externally supplied assets")
 
     if args.force_export and assets.exists():
         shutil.rmtree(assets)
     if not assets.exists():
         t0 = time.time()
+        from experiments.export_hnsw_assets import export as export_hnsw_assets
         export_hnsw_assets(args.config, str(assets))
         print(f"[stage] export_seconds={time.time() - t0:.2f}", flush=True)
     else:
@@ -335,6 +341,8 @@ def run(args: argparse.Namespace) -> Path:
             str(args.m),
             "--ef-construction",
             str(args.ef_construction),
+            "--repeats", str(args.repeats),
+            "--ef-multipliers", args.ef_multipliers,
             "--gates",
             ",".join(str(float(r["gate_logprob"])) for r in gates),
             "--overfetch-multipliers",
@@ -344,6 +352,8 @@ def run(args: argparse.Namespace) -> Path:
             "--out",
             str(run_csv),
         ]
+        if args.include_library:
+            cmd.append("--include-library")
         subprocess.run(cmd, check=True)
         frame = _annotate_run(
             pd.read_csv(run_csv), predicate_set=name, gates=gates, k=args.k
@@ -373,6 +383,10 @@ def run(args: argparse.Namespace) -> Path:
         "cpu_model": _cpu_model(),
         "rustc": _rust_version(),
         "queries": args.queries,
+        "timing_repeats": args.repeats,
+        "ef_multipliers": _csv_floats(args.ef_multipliers),
+        "execution_order": "deterministically randomized per query/gate/repetition",
+        "latency_scope": "resident warm-cache synthetic-query traversal; no cold-cache claim",
         "k": args.k,
         "ef": args.ef,
         "m": args.m,
@@ -390,7 +404,8 @@ def run(args: argparse.Namespace) -> Path:
         "fairness_note": (
             "for each predicate set, one HNSW graph is built and all gates, live "
             "traversals, materialized traversals, and over-fetch budgets are measured "
-            "inside that process; brute-force dense scores are computed once per query"
+            "inside that process; custom over-fetch uses the same search function; "
+            "brute-force dense scores are computed once per query"
         ),
         "program_cost_note": (
             "approx_ns_per_predicate_eval is the incremental live-minus-materialized "
@@ -428,6 +443,10 @@ def main() -> None:
     p.add_argument("--dot-evals", type=int, default=2_000_000)
     p.add_argument("--progress-every", type=int, default=100)
     p.add_argument("--force-export", action="store_true")
+    p.add_argument("--assets-dir", default=None)
+    p.add_argument("--repeats", type=int, default=3)
+    p.add_argument("--ef-multipliers", default="1,2")
+    p.add_argument("--include-library", action="store_true")
     args = p.parse_args()
     run(args)
 

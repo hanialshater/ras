@@ -40,17 +40,22 @@ class SemanticExecutor:
         self.index = index
         self.programs = programs
         self._cache: dict[str, BinarySemanticProgram] = {}
+        self._revisions: dict[str, tuple[int, int, int]] = {}
 
     @classmethod
     def open(cls, index_dir: str, program_dir: str) -> "SemanticExecutor":
         return cls(BinarySemanticIndex.load(index_dir, mmap=True), ProgramStore(program_dir))
 
     def program(self, name: str) -> BinarySemanticProgram:
-        if name not in self._cache:
+        revision = self.programs.revision(name)
+        if name not in self._cache or self._revisions.get(name) != revision:
             p = self.programs.load(name)
-            if p.dim != self.index.dim or p.packed_bytes != self.index.manifest.packed_bytes:
+            if (p.dim != self.index.dim
+                    or p.packed_bytes != self.index.manifest.packed_bytes
+                    or p.encoder_fingerprint != self.index.manifest.encoder_fingerprint):
                 raise ValueError(f"program {name!r} was compiled for a different semantic index")
             self._cache[name] = p
+            self._revisions[name] = revision
         return self._cache[name]
 
     def plan(self, positive: Iterable[str] = (), negative: Iterable[str] = ()) -> list[PredicateRef]:
@@ -83,11 +88,12 @@ class SemanticExecutor:
         if not refs:
             return np.zeros(len(ids), dtype=np.float32)
 
+        programs = [(ref, self.program(ref.name)) for ref in refs]
         bits = self.index.bits[ids]
         corrections = self.index.corrections[ids]
         total = np.zeros(len(ids), dtype=np.float64)
-        for ref in refs:
-            logits = self.program(ref.name).calibrated_logits(bits, corrections).astype(np.float64)
+        for ref, program in programs:
+            logits = program.calibrated_logits(bits, corrections).astype(np.float64)
             # log sigma(z) for positive predicates; log sigma(-z) for negation.
             z = logits if ref.positive else -logits
             total += -np.logaddexp(0.0, -z)

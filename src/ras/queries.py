@@ -5,7 +5,7 @@ from dataclasses import dataclass, asdict
 from typing import Sequence
 import numpy as np
 import pandas as pd
-from .teachers import LATENT_SPECS
+from .teacher_specs import LATENT_SPECS
 
 
 @dataclass(frozen=True)

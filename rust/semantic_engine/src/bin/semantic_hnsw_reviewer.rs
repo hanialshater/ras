@@ -38,6 +38,9 @@ struct Args {
     gates: Vec<f32>,
     overfetch_multipliers: Vec<f64>,
     progress_every: usize,
+    repeats: usize,
+    ef_multipliers: Vec<f64>,
+    include_library: bool,
     out: PathBuf,
 }
 
@@ -80,6 +83,9 @@ fn args() -> Args {
         gates: vec![-1.0],
         overfetch_multipliers: vec![0.75, 1.0, 1.5, 2.0],
         progress_every: 100,
+        repeats: 3,
+        ef_multipliers: vec![1.0, 2.0],
+        include_library: false,
         out: PathBuf::from("semantic_hnsw_reviewer.csv"),
     };
     let mut i = 1;
@@ -96,6 +102,9 @@ fn args() -> Args {
             "--ef-construction" => { i += 1; a.ef_construction = xs[i].parse().unwrap(); }
             "--gates" => { i += 1; a.gates = parse_f32s(&xs[i]); }
             "--overfetch-multipliers" => { i += 1; a.overfetch_multipliers = parse_f64s(&xs[i]); }
+            "--repeats" => { i += 1; a.repeats = xs[i].parse().unwrap(); }
+            "--ef-multipliers" => { i += 1; a.ef_multipliers = parse_f64s(&xs[i]); }
+            "--include-library" => { a.include_library = true; }
             "--progress-every" => { i += 1; a.progress_every = xs[i].parse().unwrap(); }
             "--out" => { i += 1; a.out = PathBuf::from(&xs[i]); }
             "--help" | "-h" => {
@@ -109,7 +118,8 @@ fn args() -> Args {
     assert!(!a.positive.is_empty() || !a.negative.is_empty());
     assert!(!a.gates.is_empty());
     assert!(!a.overfetch_multipliers.is_empty());
-    assert!(a.ef >= a.k);
+    assert!(a.ef >= a.k && a.k > 0 && a.repeats > 0);
+    assert!(a.ef_multipliers.iter().all(|&x| x >= 1.0 && x.is_finite()));
     a
 }
 
@@ -135,6 +145,7 @@ fn verify_unit_norm(items: &[f32]) -> f32 {
 #[derive(Debug, Clone)]
 struct Program {
     packed_bytes: usize,
+    encoder_fingerprint: String,
     planes: Vec<u8>,
     weight_lo: f32,
     weight_scale: f32,
@@ -146,14 +157,17 @@ struct Program {
 
 fn load_program(root: &Path, name: &str) -> Program {
     let p = root.join(name);
-    let planes = fs::read(p.join("bitplanes.u8")).unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&fs::read(p.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(meta["version"].as_u64(), Some(2), "recompile legacy programs");
+    let planes = fs::read(p.join(meta["bitplanes_file"].as_str().unwrap())).unwrap();
     assert_eq!(planes.len() % 4, 0);
     let packed_bytes = planes.len() / 4;
-    let s = read_f32(p.join("scalars.f32"));
+    let s = read_f32(p.join(meta["scalars_file"].as_str().unwrap()));
     assert!(s.len() >= 6);
     Program {
         packed_bytes,
         planes,
+        encoder_fingerprint: meta["encoder_fingerprint"].as_str().unwrap().to_owned(),
         weight_lo: s[0],
         weight_scale: s[1],
         base: s[2],
@@ -178,6 +192,10 @@ impl Sidecar {
         let mut refs = Vec::new();
         for n in positive { refs.push(PredRef { p: load_program(program_root, n), positive: true }); }
         for n in negative { refs.push(PredRef { p: load_program(program_root, n), positive: false }); }
+        let index_meta: serde_json::Value = serde_json::from_slice(
+            &fs::read(index_root.join("manifest.json")).unwrap()).unwrap();
+        let fingerprint = index_meta["encoder_fingerprint"].as_str().expect("rebuild legacy sidecar index");
+        for r in &refs { assert_eq!(r.p.encoder_fingerprint, fingerprint, "program/index encoder mismatch"); }
         let packed_bytes = refs[0].p.packed_bytes;
         for r in &refs { assert_eq!(r.p.packed_bytes, packed_bytes); }
         let bits = fs::read(index_root.join("bits.u8")).unwrap();
@@ -336,46 +354,72 @@ struct SearchResult {
     dense_pruned_before_semantic: usize,
 }
 
-fn search_materialized(graph: &Graph, items: &[f32], sem: &[f32], query: &[f32], skip: usize, k: usize, ef: usize, gate: f32) -> SearchResult {
+/// One search implementation for live filtering, precomputed filtering and
+/// ordinary dense over-fetch. Only the eligibility callback and beam size vary.
+fn search_custom<F: FnMut(usize) -> bool>(
+    graph: &Graph, items: &[f32], query: &[f32], skip: usize,
+    k: usize, ef: usize, mut eligible: F,
+) -> SearchResult {
     let start = dense_entry_descent(graph, items, query);
     let n = graph.neigh.len();
     let mut seen = vec![false; n];
     let mut candidates = BinaryHeap::<ScoreNode>::new();
-    let mut valid_beam = BinaryHeap::<Reverse<ScoreNode>>::new();
-    let mut expanded = 0usize;
-    let mut semantic_evals = 0usize;
-    let mut dense_pruned = 0usize;
-    let start_node = ScoreNode { score: dot(items, start, query), id: start };
-    candidates.push(start_node);
+    let mut beam = BinaryHeap::<Reverse<ScoreNode>>::new();
+    let mut expanded = 0;
+    let mut evals = 0;
+    let mut pruned = 0;
+    let first = ScoreNode { score: dot(items, start, query), id: start };
+    candidates.push(first);
     seen[start] = true;
-    semantic_evals += 1;
-    if start != skip && sem[start] >= gate { valid_beam.push(Reverse(start_node)); }
-    while let Some(c) = candidates.pop() {
-        if valid_beam.len() >= ef && c.score < valid_beam.peek().unwrap().0.score { break; }
+    if start != skip {
+        evals += 1;
+        if eligible(start) { beam.push(Reverse(first)); }
+    }
+    while let Some(node) = candidates.pop() {
+        if beam.len() >= ef && node.score < beam.peek().unwrap().0.score { break; }
         expanded += 1;
-        for &nb in &graph.neigh[c.id][0] {
+        for &nb in &graph.neigh[node.id][0] {
             if nb >= n || seen[nb] { continue; }
             seen[nb] = true;
-            let dense_s = dot(items, nb, query);
-            if valid_beam.len() >= ef && dense_s <= valid_beam.peek().unwrap().0.score {
-                dense_pruned += 1;
+            let score = dot(items, nb, query);
+            if beam.len() >= ef && score <= beam.peek().unwrap().0.score {
+                pruned += 1;
                 continue;
             }
-            semantic_evals += 1;
-            let node = ScoreNode { score: dense_s, id: nb };
-            candidates.push(node);
-            if nb != skip && sem[nb] >= gate {
-                valid_beam.push(Reverse(node));
-                if valid_beam.len() > ef { valid_beam.pop(); }
+            let candidate = ScoreNode { score, id: nb };
+            candidates.push(candidate);
+            if nb != skip {
+                evals += 1;
+                if eligible(nb) {
+                    beam.push(Reverse(candidate));
+                    if beam.len() > ef { beam.pop(); }
+                }
             }
         }
     }
-    let mut results = BinaryHeap::<Reverse<ScoreNode>>::new();
-    for x in valid_beam {
-        let id = x.0.id;
-        if id != skip && sem[id] >= gate { push_topk(&mut results, k, id, dot(items, id, query)); }
+    let mut found = BinaryHeap::new();
+    for x in beam { push_topk(&mut found, k, x.0.id, x.0.score); }
+    SearchResult {
+        ids: heap_ids(found), visited: expanded, semantic_evals: evals,
+        predicate_evals: 0, dense_pruned_before_semantic: pruned,
     }
-    SearchResult { ids: heap_ids(results), visited: expanded, semantic_evals, predicate_evals: 0, dense_pruned_before_semantic: dense_pruned }
+}
+
+fn search_materialized(graph: &Graph, items: &[f32], sem: &[f32], query: &[f32],
+    skip: usize, k: usize, ef: usize, gate: f32) -> SearchResult {
+    search_custom(graph, items, query, skip, k, ef, |i| sem[i] >= gate)
+}
+
+fn search_overfetch(graph: &Graph, items: &[f32], sem: &[f32], query: &[f32],
+    skip: usize, k: usize, ask: usize, ef: usize, gate: f32) -> SearchResult {
+    let mut out = search_custom(graph, items, query, skip, ask, ef, |_| true);
+    let mut filtered = BinaryHeap::new();
+    for &id in &out.ids {
+        if sem[id] >= gate { push_topk(&mut filtered, k, id, dot(items, id, query)); }
+    }
+    out.semantic_evals = out.ids.len();
+    out.ids = heap_ids(filtered);
+    out
 }
 
 struct LiveSemanticCache {
@@ -406,41 +450,14 @@ impl LiveSemanticCache {
     }
 }
 
-fn search_live(graph: &Graph, items: &[f32], sidecar: &Sidecar, cache: &mut LiveSemanticCache, query: &[f32], skip: usize, k: usize, ef: usize, gate: f32) -> SearchResult {
+fn search_live(graph: &Graph, items: &[f32], sidecar: &Sidecar, cache: &mut LiveSemanticCache,
+    query: &[f32], skip: usize, k: usize, ef: usize, gate: f32) -> SearchResult {
     cache.begin_query();
-    let start = dense_entry_descent(graph, items, query);
-    let n = graph.neigh.len();
-    let mut seen = vec![false; n];
-    let mut candidates = BinaryHeap::<ScoreNode>::new();
-    let mut valid_beam = BinaryHeap::<Reverse<ScoreNode>>::new();
-    let mut expanded = 0usize;
-    let mut dense_pruned = 0usize;
-    let start_node = ScoreNode { score: dot(items, start, query), id: start };
-    candidates.push(start_node);
-    seen[start] = true;
-    if start != skip && cache.get(sidecar, start) >= gate { valid_beam.push(Reverse(start_node)); }
-    while let Some(c) = candidates.pop() {
-        if valid_beam.len() >= ef && c.score < valid_beam.peek().unwrap().0.score { break; }
-        expanded += 1;
-        for &nb in &graph.neigh[c.id][0] {
-            if nb >= n || seen[nb] { continue; }
-            seen[nb] = true;
-            let dense_s = dot(items, nb, query);
-            if valid_beam.len() >= ef && dense_s <= valid_beam.peek().unwrap().0.score {
-                dense_pruned += 1;
-                continue;
-            }
-            let node = ScoreNode { score: dense_s, id: nb };
-            candidates.push(node);
-            if nb != skip && cache.get(sidecar, nb) >= gate {
-                valid_beam.push(Reverse(node));
-                if valid_beam.len() > ef { valid_beam.pop(); }
-            }
-        }
-    }
-    let mut results = BinaryHeap::<Reverse<ScoreNode>>::new();
-    for x in valid_beam { push_topk(&mut results, k, x.0.id, dot(items, x.0.id, query)); }
-    SearchResult { ids: heap_ids(results), visited: expanded, semantic_evals: cache.semantic_evals, predicate_evals: cache.predicate_evals, dense_pruned_before_semantic: dense_pruned }
+    let mut result = search_custom(graph, items, query, skip, k, ef,
+        |i| cache.get(sidecar, i) >= gate);
+    result.semantic_evals = cache.semantic_evals;
+    result.predicate_evals = cache.predicate_evals;
+    result
 }
 
 fn truth_from_dense(dense: &[f32], sem: &[f32], gate: f32, k: usize, skip: usize) -> Vec<usize> {
@@ -463,6 +480,15 @@ fn same_ids(a: &[usize], b: &[usize]) -> bool {
     x.sort_unstable();
     y.sort_unstable();
     x == y
+}
+
+fn table_mean_logprob(table: &[f32], item: usize, width: usize, refs: &[(usize, bool)]) -> f32 {
+    let mut score = 0.;
+    for &(column, positive) in refs {
+        let z = table[item * width + column];
+        score += log_sigmoid(if positive { z } else { -z });
+    }
+    score / refs.len() as f32
 }
 
 fn main() {
@@ -495,57 +521,118 @@ fn main() {
     println!("[reviewer] semantic scores ready in {:.2}s", sem_t0.elapsed().as_secs_f64());
 
     let mut out = BufWriter::new(File::create(&a.out).unwrap());
-    writeln!(out, "query_id,gate_index,gate_logprob,method,overfetch_multiplier,ask,latency_ms,recall_at_k,returned,visited,semantic_evals,predicate_evals,dense_pruned_before_semantic,qualified_fraction,live_matches_materialized").unwrap();
-
+    writeln!(out, "query_id,repeat,order_position,gate_index,gate_logprob,method,overfetch_multiplier,ask,ef_search,latency_ms,recall_at_k,returned,visited,semantic_evals,predicate_evals,dense_pruned_before_semantic,qualified_fraction,live_matches_materialized").unwrap();
+    let table_path = a.assets.join("binary_logits.f32");
+    let (table, table_width, table_refs) = if table_path.exists() {
+        let meta: serde_json::Value = serde_json::from_slice(&fs::read(a.assets.join("manifest.json")).unwrap()).unwrap();
+        let names = meta["concepts"].as_array().unwrap();
+        let refs = a.positive.iter().map(|x| (x, true)).chain(a.negative.iter().map(|x| (x, false)))
+            .map(|(name, sign)| (names.iter().position(|x| x.as_str() == Some(name.as_str())).unwrap(), sign)).collect::<Vec<_>>();
+        let values = read_f32(table_path);
+        assert_eq!(values.len(), n * names.len());
+        (values, names.len(), refs)
+    } else { (Vec::new(), 0, Vec::new()) };
     let qn = a.queries.min(n);
     let mut live_cache = LiveSemanticCache::new(n);
     let bench_t0 = Instant::now();
+    // Labels are never consulted here. Truth and every method use identical
+    // compiled eligibility; semantic relevance is measured separately.
     for qi in 0..qn {
         if a.progress_every > 0 && qi % a.progress_every == 0 {
             println!("[reviewer] query {}/{} elapsed={:.1}s", qi, qn, bench_t0.elapsed().as_secs_f64());
         }
         let qid = (qi * 9973) % n;
         let query = &items[qid * D..(qid + 1) * D];
-        let mut dense = vec![0.0f32; n];
-        for id in 0..n { dense[id] = dot(&items, id, query); }
-
+        let dense = (0..n).map(|id| dot(&items, id, query)).collect::<Vec<_>>();
         for (gi, &gate) in a.gates.iter().enumerate() {
             let qfrac = qualified[gi] as f64 / n as f64;
             let truth = truth_from_dense(&dense, &sem, gate, a.k, qid);
-
-            let t = Instant::now();
-            let materialized = search_materialized(&graph, &items, &sem, query, qid, a.k, a.ef, gate);
-            let materialized_ms = t.elapsed().as_secs_f64() * 1000.0;
-            let materialized_r = recall_at_k(&materialized.ids, &truth);
-
-            let t = Instant::now();
+            // Untimed parity/warmup. All measured paths are warm-cache; order
+            // is randomized per query, gate and repetition to balance carryover.
+            let mat = search_materialized(&graph, &items, &sem, query, qid, a.k, a.ef, gate);
             let live = search_live(&graph, &items, &sidecar, &mut live_cache, query, qid, a.k, a.ef, gate);
-            let live_ms = t.elapsed().as_secs_f64() * 1000.0;
-            let live_r = recall_at_k(&live.ids, &truth);
-            let parity = same_ids(&live.ids, &materialized.ids);
-
-            writeln!(out, "{qi},{gi},{gate:.8},custom_hnsw_materialized,0,0,{materialized_ms:.6},{materialized_r:.6},{},{},{},{},{},{qfrac:.6},true",
-                materialized.ids.len(), materialized.visited, materialized.semantic_evals, materialized.predicate_evals, materialized.dense_pruned_before_semantic).unwrap();
-            writeln!(out, "{qi},{gi},{gate:.8},semantic_hnsw_live,0,0,{live_ms:.6},{live_r:.6},{},{},{},{},{},{qfrac:.6},{}",
-                live.ids.len(), live.visited, live.semantic_evals, live.predicate_evals, live.dense_pruned_before_semantic, parity).unwrap();
-
+            assert!(same_ids(&mat.ids, &live.ids), "live/materialized parity failed");
+            let mut cases = vec![(0usize, 0.0, 0usize, a.ef), (1, 0.0, 0, a.ef)];
+            if !table.is_empty() { cases.push((4, 0.0, 0, a.ef)); }
             for &mult in &a.overfetch_multipliers {
-                let ask = (((mult * a.k as f64) / qfrac).ceil() as usize).max(a.k).min(n.saturating_sub(1).max(a.k));
-                let t = Instant::now();
-                let raw = hnsw.search(query, ask, a.ef.max(ask));
-                let mut post = Vec::with_capacity(a.k);
-                for x in raw {
-                    if x.d_id != qid && sem[x.d_id] >= gate {
-                        post.push(x.d_id);
-                        if post.len() == a.k { break; }
+                let ask = ((mult * a.k as f64 / qfrac).ceil() as usize).max(a.k).min(n - 1);
+                for &ef_mult in &a.ef_multipliers {
+                    let search_ef = ((a.ef.max(ask) as f64 * ef_mult).ceil() as usize).min(n);
+                    if !cases.iter().any(|&(kind, _, old_ask, old_ef)| kind == 2 && old_ask == ask && old_ef == search_ef) {
+                        cases.push((2, mult, ask, search_ef));
+                        if a.include_library { cases.push((3, mult, ask, search_ef)); }
                     }
                 }
-                let ms = t.elapsed().as_secs_f64() * 1000.0;
-                let r = recall_at_k(&post, &truth);
-                writeln!(out, "{qi},{gi},{gate:.8},hnsw_overfetch_materialized,{mult:.4},{ask},{ms:.6},{r:.6},{},0,0,0,0,{qfrac:.6},true", post.len()).unwrap();
+            }
+            for repeat in 0..a.repeats {
+                let mut order = (0..cases.len()).collect::<Vec<_>>();
+                let mut rng = 7u64 ^ ((qi as u64 + 1) << 32) ^ ((gi as u64 + 1) << 16) ^ repeat as u64;
+                for i in (1..order.len()).rev() {
+                    rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+                    order.swap(i, rng as usize % (i + 1));
+                }
+                for (position, &ci) in order.iter().enumerate() {
+                    let (kind, mult, ask, ef_search) = cases[ci];
+                    let timer = Instant::now();
+                    let (method, result) = match kind {
+                        0 => ("custom_hnsw_materialized", search_materialized(&graph, &items, &sem, query, qid, a.k, ef_search, gate)),
+                        1 => ("semantic_hnsw_live", search_live(&graph, &items, &sidecar, &mut live_cache, query, qid, a.k, ef_search, gate)),
+                        2 => ("custom_overfetch_materialized", search_overfetch(&graph, &items, &sem, query, qid, a.k, ask, ef_search, gate)),
+                        4 => ("materialized_logits_hnsw", search_custom(&graph, &items, query, qid, a.k, ef_search,
+                            |i| table_mean_logprob(&table, i, table_width, &table_refs) >= gate)),
+                        _ => {
+                            let raw = hnsw.search(query, ask, ef_search);
+                            let ids = raw.into_iter().filter(|x| x.d_id != qid && sem[x.d_id] >= gate)
+                                .take(a.k).map(|x| x.d_id).collect::<Vec<_>>();
+                            ("library_overfetch_materialized", SearchResult {
+                                ids, visited: 0, semantic_evals: ask, predicate_evals: 0,
+                                dense_pruned_before_semantic: 0,
+                            })
+                        }
+                    };
+                    let ms = timer.elapsed().as_secs_f64() * 1000.0;
+                    let recall = recall_at_k(&result.ids, &truth);
+                    writeln!(out, "{qi},{repeat},{position},{gi},{gate:.8},{method},{mult:.4},{ask},{ef_search},{ms:.6},{recall:.6},{},{},{},{},{},{qfrac:.6},true",
+                        result.ids.len(), result.visited, result.semantic_evals,
+                        result.predicate_evals, result.dense_pruned_before_semantic).unwrap();
+                }
             }
         }
+        out.flush().unwrap();
     }
-    out.flush().unwrap();
     println!("[reviewer] done in {:.2}s results={}", bench_t0.elapsed().as_secs_f64(), a.out.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn complete_graph(n: usize) -> Graph {
+        Graph { neigh: (0..n).map(|i| vec![(0..n).filter(|&j| j != i).collect()]).collect(),
+            level: vec![0; n], max_level: 0, top_nodes: vec![0] }
+    }
+    #[test]
+    fn shared_traversal_and_full_overfetch_match_bruteforce() {
+        let n = 25;
+        let graph = complete_graph(n);
+        let mut items = vec![0.; n * D];
+        for i in 0..n { items[i * D] = i as f32 / n as f32; }
+        let mut query = vec![0.; D]; query[0] = 1.;
+        let sem = (0..n).map(|i| if i % 3 == 0 { 0. } else { -10. }).collect::<Vec<_>>();
+        let dense = (0..n).map(|i| dot(&items, i, &query)).collect::<Vec<_>>();
+        let truth = truth_from_dense(&dense, &sem, -1., 4, 24);
+        let mat = search_materialized(&graph, &items, &sem, &query, 24, 4, 10, -1.);
+        let over = search_overfetch(&graph, &items, &sem, &query, 24, 4, n - 1, n, -1.);
+        assert!(same_ids(&truth, &mat.ids));
+        assert!(same_ids(&truth, &over.ids));
+    }
+    #[test]
+    fn invalid_nodes_remain_bridges() {
+        let mut items = vec![0.; 3 * D];
+        items[0] = .2; items[D] = .3; items[2 * D] = .9;
+        let graph = Graph { neigh: vec![vec![vec![1]], vec![vec![2]], vec![vec![]]],
+            level: vec![0; 3], max_level: 0, top_nodes: vec![0] };
+        let mut query = vec![0.; D]; query[0] = 1.;
+        let out = search_materialized(&graph, &items, &[-10., -10., 0.], &query, usize::MAX, 1, 2, -1.);
+        assert_eq!(out.ids, vec![2]);
+    }
 }

@@ -25,7 +25,6 @@ import time
 import numpy as np
 import pandas as pd
 
-from experiments.export_native_finalists import export as export_native
 from ras import SemanticExecutor
 
 
@@ -200,6 +199,7 @@ def run(args: argparse.Namespace) -> Path:
         shutil.rmtree(assets)
     if not assets.exists():
         t0 = time.time()
+        from experiments.export_native_finalists import export as export_native
         export_native(args.config, str(assets))
         print(f"export_seconds={time.time() - t0:.2f}")
 

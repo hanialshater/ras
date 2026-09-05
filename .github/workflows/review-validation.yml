@@ -1,0 +1,28 @@
+name: review-validation
+on:
+  push:
+    branches: ["codex/ras-review-experiments"]
+  pull_request:
+jobs:
+  controlled-checks:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src:.
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install numpy pandas scikit-learn faiss-cpu matplotlib PyYAML pytest
+      - run: python -m compileall -q src experiments tests
+      - run: pytest -q tests/test_binary.py tests/test_semantic_sidecar.py tests/test_accounting.py tests/test_review_regressions.py tests/test_smoke.py
+      - run: cargo test --release --manifest-path rust/semantic_engine/Cargo.toml --bin semantic_hnsw_reviewer
+      - run: python -u -m experiments.review_followup --synthetic --output-dir /tmp/ras-review-smoke --hnsw-queries 4 --timing-repeats 1 --overfetch-multipliers 1,2 --ef-multipliers 1,2
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: review-smoke-results
+          path: /tmp/ras-review-smoke

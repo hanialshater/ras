@@ -10,6 +10,8 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import os
+import uuid
 
 import numpy as np
 from sklearn.linear_model import SGDClassifier
@@ -20,7 +22,7 @@ from .calibration import fit_scalar_calibrator
 from .semantic_index import BinarySemanticIndex
 
 
-PROGRAM_FORMAT_VERSION = 1
+PROGRAM_FORMAT_VERSION = 2
 _POPCOUNT = np.asarray([int(i).bit_count() for i in range(256)], dtype=np.uint8)
 
 
@@ -37,6 +39,7 @@ class BinarySemanticProgram:
     calibration_a: float = 1.0
     calibration_b: float = 0.0
     positive_rate: float = 0.5
+    encoder_fingerprint: str = ""
 
     @property
     def program_bytes_theoretical(self) -> int:
@@ -96,6 +99,7 @@ def compile_linear_program(
         calibration_a=float(calibration_a),
         calibration_b=float(calibration_b),
         positive_rate=float(positive_rate),
+        encoder_fingerprint=index.manifest.encoder_fingerprint,
     )
 
 
@@ -167,7 +171,7 @@ def fit_binary_predicate(
 
 
 def _safe_name(name: str) -> str:
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+    if name in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
         raise ValueError("program names may contain only letters, digits, '_', '-', and '.'")
     return name
 
@@ -181,11 +185,19 @@ class ProgramStore:
 
     def save(self, program: BinarySemanticProgram, *, overwrite: bool = True) -> Path:
         name = _safe_name(program.name)
-        root = self.path / name
+        root = self._root(name)
         if root.exists() and not overwrite:
             raise FileExistsError(root)
         root.mkdir(parents=True, exist_ok=True)
-        np.ascontiguousarray(program.bitplanes, dtype=np.uint8).tofile(root / "bitplanes.u8")
+        if not program.encoder_fingerprint:
+            raise ValueError("program has no encoder fingerprint; recompile it")
+        revision = uuid.uuid4().hex
+        bits_file = f"bitplanes.{revision}.u8"
+        scalars_file = f"scalars.{revision}.f32"
+        packed = np.ascontiguousarray(program.bitplanes, dtype=np.uint8)
+        packed.tofile(root / bits_file)
+        # Compatibility exports for historical, immutable-asset benchmark binaries.
+        packed.tofile(root / "bitplanes.u8")
         # Native executor reads these seven f32 values directly.  The first six
         # are the 216-byte scoring payload accounting; positive_rate is planner
         # metadata used only to order likely-selective predicates first.
@@ -200,9 +212,14 @@ class ProgramStore:
                 program.positive_rate,
             ],
             dtype=np.float32,
-        ).tofile(root / "scalars.f32")
+        ).tofile(root / scalars_file)
+        (root / "scalars.f32").write_bytes((root / scalars_file).read_bytes())
         meta = {
             "version": PROGRAM_FORMAT_VERSION,
+            "encoder_fingerprint": program.encoder_fingerprint,
+            "revision": revision,
+            "bitplanes_file": bits_file,
+            "scalars_file": scalars_file,
             "name": program.name,
             "dim": int(program.dim),
             "packed_bytes": int(program.packed_bytes),
@@ -215,16 +232,18 @@ class ProgramStore:
             "positive_rate": float(program.positive_rate),
             "program_bytes_theoretical": int(program.program_bytes_theoretical),
         }
-        (root / "manifest.json").write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+        temporary = root / f"manifest.{revision}.json"
+        temporary.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, root / "manifest.json")
         return root
 
     def load(self, name: str) -> BinarySemanticProgram:
-        root = self.path / _safe_name(name)
+        root = self._root(name)
         meta = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         if int(meta["version"]) != PROGRAM_FORMAT_VERSION:
-            raise ValueError(f"unsupported program version {meta['version']}")
+            raise ValueError("legacy or unsupported program format; recompile to bind it to its encoder")
         packed = int(meta["packed_bytes"])
-        planes = np.fromfile(root / "bitplanes.u8", dtype=np.uint8).reshape(4, packed)
+        planes = np.fromfile(root / _safe_name(meta["bitplanes_file"]), dtype=np.uint8).reshape(4, packed)
         return BinarySemanticProgram(
             name=str(meta["name"]),
             dim=int(meta["dim"]),
@@ -237,7 +256,18 @@ class ProgramStore:
             calibration_a=float(meta["calibration_a"]),
             calibration_b=float(meta["calibration_b"]),
             positive_rate=float(meta.get("positive_rate", 0.5)),
+            encoder_fingerprint=str(meta["encoder_fingerprint"]),
         )
+
+    def _root(self, name: str) -> Path:
+        root = self.path / _safe_name(name)
+        if root.resolve().parent != self.path.resolve():
+            raise ValueError("program directory escapes its store")
+        return root
+
+    def revision(self, name: str) -> tuple[int, int, int]:
+        stat = (self._root(name) / "manifest.json").stat()
+        return stat.st_ino, stat.st_mtime_ns, stat.st_size
 
     def names(self) -> list[str]:
         return sorted(p.name for p in self.path.iterdir() if p.is_dir() and (p / "manifest.json").exists())

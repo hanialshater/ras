@@ -4,16 +4,8 @@ from typing import Sequence
 import numpy as np
 import torch
 
-LATENT_SPECS = [
-    {"name": "minimalist", "query": "minimalist", "pos": ["a minimalist understated fashion item", "a clean simple minimal shoe", "simple sleek understated design"], "neg": ["a busy ornate decorative fashion item", "heavily embellished flashy design", "complex colorful overdesigned fashion item"]},
-    {"name": "office_appropriate", "query": "office", "pos": ["office appropriate professional fashion item", "formal polished shoe suitable for work", "smart business casual fashion item"], "neg": ["casual beachwear party fashion item", "athletic sporty performance shoe", "very relaxed informal fashion item"]},
-    {"name": "technical_sporty", "query": "sporty", "pos": ["technical sporty athletic performance shoe", "running or training shoe", "performance sportswear style"], "neg": ["classic non athletic fashion shoe", "formal lifestyle shoe", "fashion item not meant for sports"]},
-    {"name": "retro", "query": "retro", "pos": ["retro vintage style fashion item", "old school nostalgic sneaker design", "vintage inspired fashion product"], "neg": ["modern contemporary fashion item", "sleek current style design", "plain contemporary minimalist shoe"]},
-    {"name": "elegant", "query": "elegant", "pos": ["elegant refined fashion item", "dressy polished stylish shoe", "sophisticated graceful design"], "neg": ["rugged sporty rough casual item", "clunky practical athletic design", "very relaxed sloppy style"]},
-    {"name": "relaxed", "query": "relaxed", "pos": ["relaxed casual laid back fashion item", "easygoing casual comfort style", "informal everyday shoe"], "neg": ["structured formal dressy fashion item", "strict professional shoe", "ceremonial formal style"]},
-    {"name": "chunky", "query": "chunky", "pos": ["chunky bulky thick soled shoe", "heavy oversized fashion silhouette", "thick robust sneaker design"], "neg": ["sleek slim streamlined shoe", "light delicate narrow silhouette", "thin elegant shoe"]},
-    {"name": "quiet_luxury", "query": "quiet luxury", "pos": ["quiet luxury understated premium fashion item", "subtle high end refined design", "premium understated leather shoe"], "neg": ["loud flashy logo heavy fashion item", "cheap looking overly branded design", "very bright attention grabbing style"]},
-]
+from .teacher_specs import LATENT_SPECS
+
 
 
 def _norm_np(x: np.ndarray) -> np.ndarray:
