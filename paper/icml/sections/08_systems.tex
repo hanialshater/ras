@@ -4,16 +4,14 @@
 \subsection{Bring-your-own retrieval and embeddings}
 The intended deployment boundary remains narrow: a host search engine owns document lifecycle, exact filters, lexical/vector indexing, and the downstream ranker. Given any precomputed item embedding matrix $X\in\R^{N\times D}$, the semantic layer fits one catalog-wide binary encoder, writes packed item codes once, and separately stores compiled predicate programs. Changing the embedding model or the catalog-wide binary transform creates a new index generation and requires predicates to be recompiled; adding a new semantic concept writes only a new program and does not rewrite item codes.
 
-There are now two serving modes. In the candidate-side mode, an existing ANN engine passes row IDs to \code{SemanticExecutor}, which scores and prunes them. In the integrated mode, the same compiled programs are called from HNSW traversal: dense similarity remains the navigation geometry, while the learned predicate decides whether a visited point may enter the valid result beam. Invalid points remain traversable. The integrated experiment is the stronger systems result because it avoids materializing a large candidate pool before semantic filtering.
+There are two serving modes. In the candidate-side mode, an existing ANN engine passes row IDs to \code{SemanticExecutor}, which scores and prunes them. In the integrated mode, the same compiled programs are called from HNSW traversal: dense similarity remains the navigation geometry, while the learned predicate decides whether a visited point may enter the valid result beam. Invalid points remain traversable. The integrated experiment is the stronger systems result because it avoids materializing a large candidate pool before semantic filtering.
 
 The repository exposes the portable representation through \code{BinarySemanticIndex} and \code{ProgramStore}. The item payload is a packed sign-bit file plus two f32 correction values per item. A Binary1-LS2-int4 predicate contains four packed int4 weight bit planes plus scalar scoring/calibration metadata. For $D=384$, the accounting used throughout the paper is 56 bytes/item and about 216 bytes/predicate. The Python reference loader memory-maps the item payload. The current Rust prototypes read the resident files into memory; mmap/segment management remains deployment work rather than a claimed result.
 
 \subsection{Joint item--program memory}
-For a catalog with $N$ items and $C$ compiled semantic concepts, the relevant payload objective is
-\begin{equation}
-M(N,C)=N B_{\mathrm{item}} + C B_{\mathrm{program}}.
-\end{equation}
-This differs from vector compression alone because a semantic search system may keep a large reusable concept vocabulary while activating only a small subset for each query. Table~\ref{tab:vocabmemory} gives an illustrative 5M-item/100k-concept calculation. The 303$\times$ per-program gap between Binary1-LS2-int4 and the compiled PQ64 baseline is therefore not cosmetic: it changes whether a large concept store fits comfortably in cache or memory, even though PQ64 remains the stronger compressed-quality point in the candidate benchmark.
+The persistent memory objective is Eq.~\ref{eq:joint_memory}. This differs from vector compression alone because a semantic search system may keep a large reusable concept vocabulary while activating only a small subset for each query. The comparison must distinguish \emph{persistent} from \emph{active} state. Binary1-LS2-int4 uses essentially the same 216-byte representation for both. PQ64 can persist a 1,548-byte linear head per concept plus one shared codebook and materialize a 65,548-byte lookup table only when that concept is activated. Table~\ref{tab:vocabmemory} therefore uses the compact persistent PQ representation rather than charging one permanent LUT per concept.
+
+This correction changes the scale of the memory claim. Binary1-LS2-int4 still has the smallest joint payload in the illustrative 5M-item/100k-concept calculation, but the relevant persistent-program ratio to the PQ head is about 7.2$\times$, not 303$\times$. The larger 65.5\,KB PQ number remains relevant to active cache footprint and to the native microkernel, which consumes pre-materialized LUTs, but it is not an intrinsic storage requirement.
 
 \subsection{Latency accounting}
 End-to-end search latency should be decomposed rather than attributing the entire query path to the semantic kernel:
@@ -28,12 +26,12 @@ The older native results in Table~\ref{tab:native} measure a single-threaded sem
 
 \begin{table*}[t]
 \centering
-\caption{Single-thread semantic microkernel latency in milliseconds (median of five repetitions, real held-out rows/programs tiled to 500k resident items). These are not end-to-end search latencies.}
+\caption{Single-thread semantic microkernel latency in milliseconds (median of five repetitions, real held-out rows/programs tiled to 500k resident items). These are not end-to-end search latencies. The FP32 path is a scalar reference implementation rather than optimized BLAS.}
 \label{tab:latency}
 \small
 \begin{tabular}{rrccc}
 \toprule
-Candidates & Predicates & FP32 linear & PQ64 & Binary1-LS2-int4\\
+Candidates & Predicates & FP32 scalar & PQ64 & Binary1-LS2-int4\\
 \midrule
 5k   & 1 & 3.049 & 0.540 & \textbf{0.484}\\
 5k   & 4 & 6.439 & \textbf{0.971} & 1.130\\
@@ -48,17 +46,22 @@ Candidates & Predicates & FP32 linear & PQ64 & Binary1-LS2-int4\\
 \end{tabular}
 \end{table*}
 
-At a 5k candidate pool, Binary1-LS2-int4 ranges from 0.48\,ms for one predicate to 1.99\,ms for eight predicates in that historical run. The CPU model was not recorded, so the absolute numbers are retained only as microkernel scaling evidence. The newer HNSW experiment in Table~\ref{tab:livehnsw} is the more relevant search-stage result: it includes graph traversal, valid-beam maintenance, and live compiled predicate execution, and compares against the same normalized-dot geometry within one controlled run.
+At a 5k candidate pool, Binary1-LS2-int4 ranges from 0.48\,ms for one predicate to 1.99\,ms for eight predicates in that historical run. The CPU model was not recorded, so the absolute numbers are retained only as microkernel scaling evidence. We do not use the ratio to the scalar FP32 loop as a headline speedup. The newer HNSW experiment in Table~\ref{tab:livehnsw} is the more relevant search-stage result because it includes graph traversal, valid-beam maintenance, and live compiled predicate execution.
 
 \subsection{Live predicate execution during traversal}
 The integrated Rust path uses a dense-first rule. A discovered neighbor is first scored by dense similarity. If it cannot improve the current valid $ef$ beam, it is discarded before touching semantic state. Otherwise its Binary1-LS2-int4 predicate program is evaluated and cached once for that query. Valid points may enter the result beam; invalid points are still inserted into the dense navigation frontier, preserving graph connectivity. Semantic scores never modify navigation priority in the final design.
 
-This separation emerged empirically. Directly steering the HNSW priority by a weighted semantic score reduced visited nodes but damaged Recall@50. Explicit two-hop bridge expansion added many candidate edges without improving recall. The final algorithm therefore keeps geometry and eligibility separate:
+This separation emerged empirically. Directly steering the HNSW priority by a weighted semantic score reduced visited nodes but damaged Traversal Recall@50. Explicit two-hop bridge expansion added many candidate edges without improving recall. The final algorithm therefore keeps geometry and eligibility separate:
 \begin{equation}
 \text{navigate by } s_{\mathrm{dense}}(q,x), \qquad
 \text{admit result if } S_{\mathrm{semantic}}(x)\ge\tau.
 \end{equation}
-At 2\% selectivity the live run performs roughly 28.1k predicate invocations over three active predicates; the measured incremental program overhead is 3.11\,ms, or about 110\,ns per predicate invocation. At 50\% selectivity the corresponding overhead is 0.27\,ms. Exact result-ID parity with the materialized custom traversal is 1.0 across the reported sweep.
+
+In the 1,000-query reviewer benchmark, three independently chosen three-predicate sets are tested at 50\%, 20\%, 10\%, 5\%, and 2\% eligibility. Live traversal reaches 0.955--0.992 Traversal Recall@50 across the 15 conditions. Relative to the same custom traversal with semantics materialized for free, the incremental program cost is approximately 96--134\,ns per predicate invocation. The measured scalar 384-D normalized-dot kernel on the same Intel Xeon 2.20\,GHz CPU costs 617\,ns, putting the predicate overhead at roughly 0.16--0.22 dense-distance equivalents per invocation.
+
+The selectivity-aware over-fetch baseline is deliberately separated from the older \code{hnsw\_rs} filtered-search comparison. For an eligible fraction $s$, the completed reviewer run asks ordinary HNSW for approximately $mK/s$ candidates with $m\in\{0.75,1,1.5,2\}$, then applies the same materialized semantic predicate. No tested point reaches live traversal recall within 0.005 in any of the 15 conditions. We therefore do not attribute the older custom-vs-library latency gap to the compiled method and do not claim a universal matched-recall speedup from the current completed sweep. At the largest completed budget, live traversal becomes both faster and higher recall at 5\% and 2\% selectivity; at higher selectivities over-fetch is faster but materially lower recall.
+
+Exact result-ID parity between live execution and the corresponding custom materialized traversal is 1.0 across the completed sweep. This is a correctness assertion: it verifies that executing the Binary1 programs online reproduces the same custom traversal decision as precomputing their semantic scores. It is not itself a search-quality result.
 
 \subsection{Composition-aware early termination}
 The calibrated composition rule also provides a safe upper bound when several predicates are evaluated sequentially. Each positive term is $\log\sigmoid(L_C)\le 0$ and each negated term is $\log\sigmoid(-L_C)\le 0$. After evaluating any prefix $P$ of a query plan,
@@ -68,6 +71,6 @@ S_P(x) \ge S_{\mathcal Q}(x),
 so the partial score is an upper bound on the final score. If a top-$k$ heap already has threshold $\tau$ and $S_P(x)\le\tau$, the item cannot recover after evaluating remaining predicates. The current live-HNSW gate evaluates the active predicate set exactly, but this bound remains available for future multi-predicate short-circuiting and for candidate-side top-$k$ composition.
 
 \subsection{Reproducibility and remaining systems work}
-The fair HNSW result is reproducible through \path{experiments/semantic_hnsw_live_sweep.py}; the checked-in summary used by the paper is \path{paper/icml/data/semantic_hnsw_live_fair_full.csv}. The harness exports the strict held-out assets, verifies unit-normalized retrieval vectors, derives selectivity thresholds from the compiled programs, builds the Rust executable, runs all baselines, and writes raw, summary, fairness, and environment manifests including the repository commit, CPU model, Python version, and Rust version.
+The reviewer benchmark is reproducible through \path{experiments/semantic_hnsw_reviewer_sweep.py} and the public Colab \path{notebooks/rsa_semantic_hnsw_reviewer_colab.ipynb}. The optimized harness exports only the assets needed by HNSW, verifies unit-normalized retrieval vectors, derives selectivity thresholds from the compiled programs, builds the graph once per predicate set, computes brute-force dense scores once per query, and sweeps all gates and over-fetch budgets in that same process. It writes raw, summary, matched-frontier, predicate-cost, and environment artifacts including the repository commit, CPU model, Python version, and Rust version. The completed 2$\times$ summary used in the paper is \path{paper/icml/data/semantic_hnsw_reviewer_2x_summary.csv}.
 
-The remaining systems questions are now narrower: (i) mmap/zero-copy loading and direct integration with a production ANN index rather than an extracted research graph; (ii) p50/p95/p99 under concurrency and thread scaling; (iii) update/tombstone and index-generation semantics; (iv) stores of $10^2$--$10^6$ concepts with realistic program lookup/cache behavior; and (v) end-to-end relevance on natural search or recommendation traffic. The current result establishes that live learned soft predicates are cheap enough to execute during ANN traversal; it does not establish production p99 or distributed-service latency.
+The public harness now extends the over-fetch sweep to $m\in\{0.75,1,1.5,2,3,4,6,8\}$ specifically to search for a genuine matched-recall point rather than stopping at a budget that fails to match. The remaining systems questions are: (i) the final matched-recall frontier from that extended sweep; (ii) mmap/zero-copy loading and direct integration with a production ANN index rather than an extracted research graph; (iii) p50/p95/p99 under concurrency and thread scaling; (iv) update/tombstone and index-generation semantics; (v) stores of $10^2$--$10^6$ concepts with realistic program lookup/cache behavior; and (vi) end-to-end relevance on natural search or recommendation traffic. The current result establishes that live learned soft predicates are cheap enough to execute during ANN traversal; it does not establish production p99 or distributed-service latency.
