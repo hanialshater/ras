@@ -2,6 +2,80 @@
 
 This note collects research ideas that are intentionally **not part of the current paper claim**. The current evidence supports compact compiled semantic predicates and their use as soft eligibility tests inside ANN traversal. The directions below ask how far that idea can be pushed.
 
+## 0. Reproduce ColBERT and MUVERA before representation research
+
+Before changing the retrieval representation or claiming a new interaction with late-interaction models, establish clean reproductions of the two upstream ingredients.
+
+### Reproduce ColBERT first
+
+Start with a canonical ColBERT-style late-interaction baseline. Keep separate query-token and document-token vectors and evaluate exact MaxSim scoring:
+
+```text
+S(q,d) = sum_i max_j q_i^T d_j.
+```
+
+The first goal is reproduction, not novelty. Verify the implementation on a benchmark where ColBERT has known behavior, then run the same model on the fashion domain.
+
+Record:
+
+- retrieval Recall@K / MRR / NDCG as appropriate for the benchmark;
+- document and query representation sizes;
+- exact MaxSim latency;
+- candidate-generation cost;
+- the behavior of multi-aspect and negated queries.
+
+Exact ColBERT MaxSim should then become the reference retrieval function for the MUVERA study.
+
+### Reproduce MUVERA independently
+
+Next reproduce MUVERA as a compilation of multi-vector retrieval into a fixed-dimensional representation suitable for ordinary MIPS/ANN search.
+
+The core comparison should be:
+
+```text
+exact ColBERT / late-interaction MaxSim
+            vs
+MUVERA fixed-dimensional retrieval
+```
+
+Measure how much of the late-interaction quality survives and what is gained in storage and ANN efficiency. Keep this reproduction independent of the semantic-predicate code so that any discrepancy can be diagnosed before adding new ideas.
+
+Use at least two settings:
+
+1. a canonical retrieval benchmark where ColBERT/MUVERA are expected to work;
+2. the fashion domain used by the current semantic-predicate experiments.
+
+This prevents a fashion-domain failure from being confused with an implementation failure.
+
+### Only then start the new research
+
+Once both baselines reproduce, the representation study becomes much cleaner:
+
+```text
+MiniLM single-vector
+        -> ColBERT late interaction
+        -> MUVERA fixed-dimensional representation
+```
+
+For each search-side representation, ask:
+
+- how linearly separable are the semantic concepts?
+- how strong is a global FP32 semantic head?
+- do local linear experts improve the semantic ceiling?
+- how much of that quality survives Binary1 compilation?
+- can compiled predicates still execute cheaply inside ANN traversal?
+
+The most direct combination is to keep responsibilities separate:
+
+```text
+MUVERA / ANN representation -> graph navigation
+Binary semantic sidecar     -> explicit semantic eligibility
+```
+
+A more ambitious experiment is to compile semantic predicates directly over the MUVERA item representation. If the richer representation raises the FP32 semantic ceiling and Binary1 preserves most of that gain, the research question becomes substantially stronger: can a representation designed to preserve late interaction also serve as a substrate for tiny reusable semantic programs?
+
+This track should remain separate from the current paper until the ColBERT and MUVERA reproductions are independently validated.
+
 ## 1. Make semantic concepts more linear
 
 The current strongest compact compiler starts from a fixed MiniLM embedding and fits one linear semantic head per concept. A major remaining gap is therefore upstream of quantization: some concepts may simply be poorly represented by one global linear boundary.
@@ -264,15 +338,20 @@ A theoretical treatment could connect vector quantization, function approximatio
 
 A practical sequence is:
 
-1. global vs local FP32 linear heads;
-2. local centering + Binary1 compilation;
-3. held-out-concept semantic-execution-space learning;
-4. predicate-count scaling and short-circuiting;
-5. extended matched-recall over-fetch sweep;
-6. 2M-item HNSW scaling and QPS/core;
-7. stronger teacher / human labels;
-8. natural LLM-generated query plans;
-9. anchor/user-conditioned ephemeral programs;
-10. second-domain replication.
+1. finish and freeze the current paper with the extended matched-recall over-fetch sweep;
+2. reproduce ColBERT / exact late-interaction MaxSim on a canonical benchmark;
+3. reproduce MUVERA against exact ColBERT, first canonically and then on fashion;
+4. establish the representation ladder: MiniLM vs ColBERT vs MUVERA;
+5. global vs local FP32 semantic heads on the reproduced representations;
+6. local centering + Binary1 compilation;
+7. test Binary semantic sidecars with MUVERA-driven ANN navigation;
+8. test direct predicate compilation over the MUVERA representation;
+9. held-out-concept semantic-execution-space learning;
+10. predicate-count scaling and short-circuiting;
+11. 2M-item HNSW scaling and QPS/core;
+12. stronger teacher / human labels;
+13. natural LLM-generated query plans;
+14. anchor/user-conditioned ephemeral programs;
+15. second-domain replication.
 
 The central question behind all of these directions is the same: **can complex semantic intent be moved offline or into a tiny compilation step so that search-time execution remains as cheap and composable as traditional filtering?**
