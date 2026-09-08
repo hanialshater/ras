@@ -303,6 +303,26 @@ def evaluate(root, args):
                        'Single seed per run. Repeat --seed and --fde-seed in separate output directories.']})
 
 
+def bind_request(root, request):
+    """Restart failed preparation after a code fix; preserve completed-run provenance."""
+    request_file = root / 'request.json'
+    if request_file.exists():
+        previous = json.loads(request_file.read_text())
+        if previous != request:
+            unchanged_config = ({k: v for k, v in previous.items() if k != 'source_hash'} ==
+                                {k: v for k, v in request.items() if k != 'source_hash'})
+            completed_or_evaluated = any((root / name).exists() for name in [
+                'prepared.complete.json', 'per_query.csv', 'summary.csv',
+                'rankings.json', 'late_interaction_results.zip'])
+            if not unchanged_config or completed_or_evaluated:
+                raise ValueError('output directory belongs to another configuration/code version; choose a new directory')
+            history = root / 'attempts'
+            history.mkdir(exist_ok=True)
+            (history / ('request-' + sha256(request_file) + '.json')).write_bytes(request_file.read_bytes())
+            print('[restart] prior preparation failed; archiving its request and rebuilding with the code fix', flush=True)
+    write_json(request_file, request)
+
+
 def run(args):
     root = Path(args.output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -310,10 +330,7 @@ def run(args):
     request = {**vars(args), 'config_contents': config,
                'source_hash': hashlib.sha256((Path(__file__).read_bytes() +
                    (Path(__file__).parents[1] / 'src/ras/late_interaction.py').read_bytes())).hexdigest()}
-    request_file = root / 'request.json'
-    if request_file.exists() and json.loads(request_file.read_text()) != request:
-        raise ValueError('output directory belongs to another configuration/code version; choose a new directory')
-    write_json(request_file, request)
+    bind_request(root, request)
     marker = root / 'prepared.complete.json'
     if marker.exists():
         for name, checksum in json.loads(marker.read_text())['files'].items():

@@ -144,3 +144,115 @@ def test_notebook_success_streams_output(tmp_path, capsys):
     assert notebook_process_runner()([sys.executable, '-c', "print('finished')"],
                                      log_path=tmp_path / 'success.log') == 0
     assert 'finished' in capsys.readouterr().out
+
+
+def test_colbert_ragged_documents_avoid_list_cpu_and_preserve_batch_order():
+    from ras.late_interaction import ColBERTEncoder
+
+    class Tensor:
+        def __init__(self, values):
+            self.values = np.asarray(values)
+        def detach(self):
+            return self
+        def float(self):
+            self.values = self.values.astype(np.float32)
+            return self
+        def cpu(self):
+            return self
+        def numpy(self):
+            return self.values
+
+    class Checkpoint:
+        def __init__(self):
+            self.batches = []
+        def docFromText(self, texts, *, bsize, keep_dims, to_cpu):
+            self.batches.append(list(texts))
+            assert keep_dims is False
+            docs = [Tensor(np.full((int(t) + 1, 2), int(t), dtype=np.float16)) for t in texts]
+            # ColBERT 0.2.22 doc(... keep_dims=False) returns a list. Its
+            # Checkpoint.doc to_cpu wrapper invokes .cpu() directly on it.
+            if to_cpu:
+                docs = docs.cpu()
+            return (docs,)
+        def queryFromText(self, texts, *, bsize, to_cpu):
+            assert to_cpu is True
+            return [Tensor(np.full((3, 2), int(t))) for t in texts]
+
+    adapter = ColBERTEncoder.__new__(ColBERTEncoder)
+    adapter.batch_size = 2
+    adapter.model = Checkpoint()
+    docs = adapter.encode(['0', '1', '2', '3', '4'], query=False)
+    assert adapter.model.batches == [['0', '1'], ['2', '3'], ['4']]
+    assert docs.offsets.tolist() == [0, 1, 3, 6, 10, 15]
+    for i in range(5):
+        np.testing.assert_array_equal(docs[i], np.full((i + 1, 2), i))
+    assert docs.values.dtype == np.float32
+    queries = adapter.encode(['2', '1'], query=True)
+    np.testing.assert_array_equal(queries[0], np.full((3, 2), 2))
+    np.testing.assert_array_equal(queries[1], np.full((3, 2), 1))
+
+
+def test_failed_preparation_restarts_after_code_fix_and_archives_request(tmp_path):
+    import json
+    from experiments.late_interaction_baselines import bind_request
+    old = {'source_hash': 'old', 'seed': 7}
+    new = {'source_hash': 'new', 'seed': 7}
+    bind_request(tmp_path, old)
+    partial = tmp_path / 'partial.data'
+    partial.write_text('retain evidence')
+    bind_request(tmp_path, new)
+    assert json.loads((tmp_path / 'request.json').read_text()) == new
+    history = list((tmp_path / 'attempts').glob('request-*.json'))
+    assert len(history) == 1 and json.loads(history[0].read_text()) == old
+    assert partial.read_text() == 'retain evidence'
+    bind_request(tmp_path, new)  # identical retries do not add spurious history
+    assert len(list((tmp_path / 'attempts').glob('*.json'))) == 1
+
+
+@pytest.mark.parametrize('marker', ['prepared.complete.json', 'per_query.csv', 'summary.csv',
+                                   'rankings.json', 'late_interaction_results.zip'])
+def test_code_fix_cannot_reuse_completed_or_evaluated_run(tmp_path, marker):
+    from experiments.late_interaction_baselines import bind_request
+    bind_request(tmp_path, {'source_hash': 'old', 'seed': 7})
+    (tmp_path / marker).touch()
+    before = (tmp_path / 'request.json').read_bytes()
+    with pytest.raises(ValueError, match='another configuration/code'):
+        bind_request(tmp_path, {'source_hash': 'new', 'seed': 7})
+    assert (tmp_path / 'request.json').read_bytes() == before
+
+
+def test_failed_preparation_still_rejects_configuration_changes(tmp_path):
+    from experiments.late_interaction_baselines import bind_request
+    bind_request(tmp_path, {'source_hash': 'old', 'seed': 7})
+    with pytest.raises(ValueError, match='another configuration/code'):
+        bind_request(tmp_path, {'source_hash': 'new', 'seed': 17})
+
+
+def test_installed_colbert_document_wrapper_without_model_download(monkeypatch):
+    """Exercise the installed checkpoint wrappers in Colab; stub only neural inference."""
+    torch = pytest.importorskip('torch')
+    pytest.importorskip('colbert')
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from colbert.modeling.checkpoint import Checkpoint
+    from colbert.modeling.colbert import ColBERT
+    from ras.late_interaction import ColBERTEncoder
+
+    def doc_tokens(texts, *, bsize):
+        ids = torch.tensor([int(t) for t in texts])
+        return [(ids, torch.ones_like(ids))], torch.arange(len(texts))
+
+    def neural_doc(self, input_ids, attention_mask, keep_dims):
+        assert keep_dims is False
+        return [torch.full((int(i) + 1, 2), float(i)) for i in input_ids]
+
+    monkeypatch.setattr(ColBERT, 'doc', neural_doc)
+    checkpoint = Checkpoint.__new__(Checkpoint)
+    torch.nn.Module.__init__(checkpoint)
+    checkpoint.amp_manager = SimpleNamespace(context=nullcontext)
+    checkpoint.doc_tokenizer = SimpleNamespace(tensorize=doc_tokens)
+    adapter = ColBERTEncoder.__new__(ColBERTEncoder)
+    adapter.model, adapter.batch_size = checkpoint, 2
+    documents = adapter.encode(['0', '2', '1'], query=False)
+    assert documents.offsets.tolist() == [0, 1, 4, 6]
+    np.testing.assert_array_equal(documents[1], np.full((3, 2), 2))

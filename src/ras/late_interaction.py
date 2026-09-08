@@ -186,7 +186,10 @@ class ColBERTEncoder:
             if query:
                 output = self.model.queryFromText(chunk, bsize=self.batch_size, to_cpu=True)
             else:
+                # keep_dims=False returns a list of CPU tensors. ColBERT 0.2.22's
+                # to_cpu=True wrapper incorrectly calls .cpu() on that list.
+                # Transfer each tensor below, which also supports other devices.
                 output = self.model.docFromText(chunk, bsize=self.batch_size,
-                                                keep_dims=False, to_cpu=True)[0]
+                                                keep_dims=False, to_cpu=False)[0]
             matrices.extend(x.detach().float().cpu().numpy() for x in output)
         return RaggedEmbeddings.from_list(matrices)

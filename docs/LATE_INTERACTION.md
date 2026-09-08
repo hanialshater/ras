@@ -94,8 +94,11 @@ candidate budgets on a development protocol before treating held-out results as
 confirmatory. The initial 30-query run is exploratory.
 
 Repeated identical runs verify input checksums and reuse prepared embeddings;
-evaluation restarts. A changed configuration or source implementation requires a
-new output directory. Interrupted query evaluation leaves a partial
+evaluation restarts. A changed configuration requires a new output directory.
+After a code fix, an incomplete preparation can restart in the same directory:
+the old request is archived under `attempts/`, and preparation is rebuilt. Once
+preparation completed or evaluation produced results, a source change still
+requires a new directory to preserve provenance. Interrupted query evaluation leaves a partial
 `per_query.csv`; only a finished run writes a complete summary and ZIP.
 
 ## Metrics and artifacts
