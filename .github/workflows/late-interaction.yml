@@ -4,6 +4,31 @@ on:
   push:
     branches: [codex/colbert-muvera-baselines]
 jobs:
+  upstream-nanobeir:
+    runs-on: ubuntu-latest
+    env:
+      USE_TF: '0'
+      USE_FLAX: '0'
+      PYLATE_SCORES_BACKEND: torch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e '.[upstream-retrieval,dev]'
+      - run: python -c 'import torch, pylate, sentence_transformers'
+      - run: python -m pytest -q tests/test_upstream_nanobeir.py
+      - name: Check upstream notebook syntax
+        run: |
+          python - <<'PY'
+          import ast, json
+          from pathlib import Path
+          nb = json.loads(Path('notebooks/ras_upstream_nanobeir_colab.ipynb').read_text())
+          for cell in nb['cells']:
+              if cell['cell_type'] == 'code':
+                  ast.parse(''.join(cell['source']))
+          PY
   correctness:
     runs-on: ubuntu-latest
     env:

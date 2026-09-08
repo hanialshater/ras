@@ -25,6 +25,7 @@ dev = ["pytest"]
 benchmark = ["faiss-cpu"]
 late-interaction = ["colbert-ai==0.2.22", "transformers>=4.36,<4.50", "threadpoolctl"]
 modern-retrieval = ["pylate==1.6.0", "sentence-transformers==5.3.0", "transformers==4.49.0", "threadpoolctl"]
+upstream-retrieval = ["pylate==1.6.0", "sentence-transformers==5.3.0", "transformers==4.49.0", "rank-bm25==0.2.2"]
 demo = ["gradio>=5"]
 
 [tool.setuptools]
