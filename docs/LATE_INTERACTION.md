@@ -1,5 +1,9 @@
 # ColBERT and MUVERA: first controlled baselines
 
+**Current notebook:** see [Retrieval comparison v2](RETRIEVAL_COMPARISON.md) for
+dot product / ColBERT / cross-encoder scoring, separate MUVERA fidelity, and
+latency, storage and build reports. The v1 runner below remains available.
+
 This addition starts from `codex/ras-review-experiments` (PR #1, `e795f3a`).
 It leaves historical paper results unchanged. No real ColBERT/fashion result is
 claimed until the model run completes.

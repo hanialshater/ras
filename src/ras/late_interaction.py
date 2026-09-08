@@ -193,3 +193,32 @@ class ColBERTEncoder:
                                                 keep_dims=False, to_cpu=False)[0]
             matrices.extend(x.detach().float().cpu().numpy() for x in output)
         return RaggedEmbeddings.from_list(matrices)
+
+
+class CrossEncoderScorer:
+    """Joint query/title scoring; no reusable document embeddings or oracle labels."""
+    def __init__(self, checkpoint='cross-encoder/ms-marco-MiniLM-L6-v2', *,
+                 revision=None, max_length=256, batch_size=32):
+        from huggingface_hub import snapshot_download
+        from sentence_transformers import CrossEncoder
+        import torch
+        path = Path(checkpoint)
+        self.resolved_checkpoint = (str(path.resolve()) if path.is_dir() else
+                                    snapshot_download(checkpoint, revision=revision,
+                                        allow_patterns=['*.json', '*.txt', '*.model',
+                                                        '*.safetensors', 'pytorch_model*.bin']))
+        self.batch_size = batch_size
+        self.model = CrossEncoder(self.resolved_checkpoint, max_length=max_length)
+        # Use raw logits, independent of checkpoint/version default activations.
+        self.activation = torch.nn.Identity()
+
+    def score(self, query, titles):
+        if not len(titles):
+            return np.empty(0, dtype=np.float32)
+        output = self.model.predict([(query, str(title)) for title in titles],
+                                    batch_size=self.batch_size, show_progress_bar=False,
+                                    activation_fn=self.activation, convert_to_numpy=True)
+        scores = np.asarray(output, dtype=np.float32).reshape(-1)
+        if scores.shape != (len(titles),) or not np.isfinite(scores).all():
+            raise ValueError('cross-encoder must return one finite relevance score per pair')
+        return scores

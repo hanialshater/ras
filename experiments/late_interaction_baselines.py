@@ -30,7 +30,11 @@ MAPPING = {n: i for i, n in enumerate(NAMES)}
 
 
 def sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def normalize(x):
@@ -356,7 +360,7 @@ def run(args):
     print(f'Results: {root}', flush=True)
 
 
-def parse_args(argv=None):
+def build_parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config', default='configs/binary_bbq.yaml')
     p.add_argument('--output-dir', required=True)
@@ -381,7 +385,10 @@ def parse_args(argv=None):
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--threads', type=int, default=1)
     p.add_argument('--timing-repeats', type=int, default=1)
-    args = p.parse_args(argv)
+    return p
+
+
+def validate_args(args, p):
     for name in ['queries', 'k', 'pool_size', 'repetitions', 'hnsw_m', 'ef_construction',
                  'ef_search', 'query_maxlen', 'doc_maxlen', 'batch_size', 'threads', 'timing_repeats']:
         if getattr(args, name) < 1:
@@ -391,6 +398,11 @@ def parse_args(argv=None):
     if len(set(args.candidates)) != len(args.candidates):
         p.error('candidate budgets must be distinct')
     return args
+
+
+def parse_args(argv=None):
+    p = build_parser()
+    return validate_args(p.parse_args(argv), p)
 
 
 if __name__ == '__main__':
