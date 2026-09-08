@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 benchmark = ["faiss-cpu"]
+late-interaction = ["colbert-ai==0.2.22", "transformers>=4.36,<4.50", "threadpoolctl"]
 demo = ["gradio>=5"]
 
 [tool.setuptools]
@@ -35,3 +36,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "src"]
+
