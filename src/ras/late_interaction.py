@@ -195,10 +195,50 @@ class ColBERTEncoder:
         return RaggedEmbeddings.from_list(matrices)
 
 
+class ModernColBERTEncoder:
+    """Preserve PyLate's trained projection, markers, masking and query expansion."""
+    def __init__(self, checkpoint='lightonai/GTE-ModernColBERT-v1', *, revision=None,
+                 query_maxlen=48, doc_maxlen=300, batch_size=32):
+        from huggingface_hub import snapshot_download
+        from pylate import models
+        import torch
+        path = Path(checkpoint)
+        self.resolved_checkpoint = (str(path.resolve()) if path.is_dir() else
+            snapshot_download(checkpoint, revision=revision,
+                allow_patterns=['*.json', '*.txt', '*.model', '*.safetensors', '*pytorch_model*.bin']))
+        # A plain backbone would make PyLate create a random projection. Never allow that.
+        modules_path = Path(self.resolved_checkpoint) / 'modules.json'
+        if not modules_path.is_file():
+            raise ValueError('ModernColBERT requires a saved trained PyLate projection (modules.json)')
+        import json
+        modules = json.loads(modules_path.read_text())
+        if not any(module.get('type', '').endswith('.Dense') for module in modules):
+            raise ValueError('ModernColBERT checkpoint has no saved trained Dense projection')
+        self.batch_size = batch_size
+        self.model = models.ColBERT(
+            model_name_or_path=self.resolved_checkpoint, query_length=query_maxlen,
+            document_length=doc_maxlen,
+            model_kwargs={'torch_dtype': torch.float32, 'attn_implementation': 'sdpa'},
+            config_kwargs={'reference_compile': False})
+        self.model.eval()
+
+    def encode(self, texts, *, query):
+        matrices = []
+        for start in range(0, len(texts), self.batch_size):
+            chunk = list(texts[start:start + self.batch_size])
+            output = self.model.encode(chunk, batch_size=self.batch_size, is_query=query,
+                                       convert_to_numpy=True, normalize_embeddings=True,
+                                       padding=False, show_progress_bar=False)
+            if len(output) != len(chunk):
+                raise ValueError('PyLate returned a different number of document/query embeddings')
+            matrices.extend(np.asarray(x, dtype=np.float32) for x in output)
+        return RaggedEmbeddings.from_list(matrices)
+
+
 class CrossEncoderScorer:
     """Joint query/title scoring; no reusable document embeddings or oracle labels."""
     def __init__(self, checkpoint='cross-encoder/ms-marco-MiniLM-L6-v2', *,
-                 revision=None, max_length=256, batch_size=32):
+                 revision=None, max_length=256, batch_size=32, modern=False):
         from huggingface_hub import snapshot_download
         from sentence_transformers import CrossEncoder
         import torch
@@ -208,7 +248,9 @@ class CrossEncoderScorer:
                                         allow_patterns=['*.json', '*.txt', '*.model',
                                                         '*.safetensors', 'pytorch_model*.bin']))
         self.batch_size = batch_size
-        self.model = CrossEncoder(self.resolved_checkpoint, max_length=max_length)
+        options = ({'model_kwargs': {'torch_dtype': torch.float32, 'attn_implementation': 'sdpa'},
+                    'config_kwargs': {'reference_compile': False}} if modern else {})
+        self.model = CrossEncoder(self.resolved_checkpoint, max_length=max_length, **options)
         # Use raw logits, independent of checkpoint/version default activations.
         self.activation = torch.nn.Identity()
 

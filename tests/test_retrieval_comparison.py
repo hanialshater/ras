@@ -134,3 +134,72 @@ def test_online_encoding_drift_does_not_change_approximation_reference(tmp_path,
     np.testing.assert_array_equal(exact.colbert_topk_recall, 1.)
     exhaustive = full[(full.scope == 'full_corpus') & (full.candidate_budget == 1000)]
     np.testing.assert_array_equal(exhaustive.colbert_topk_recall, 1.)
+
+
+def test_modern_profile_selects_matched_models_and_rejects_overrides():
+    args = arguments('/tmp/modern', '--model-family', 'modernbert-base')
+    assert args.checkpoint == comparison.MODERN_MODELS['colbert']
+    assert args.cross_encoder_checkpoint == comparison.MODERN_MODELS['cross_encoder']
+    assert comparison.load_config(args.config)['retrieval']['model'] == comparison.MODERN_MODELS['dense']
+    assert args.query_maxlen == 48 and args.doc_maxlen == 300 and args.cross_encoder_maxlen == 512
+    assert comparison.pool_scope(args) == 'shared_modernbert_pool'
+    for flag, value in [('--checkpoint', 'colbert-ir/colbertv2.0'),
+                        ('--cross-encoder-checkpoint', 'cross-encoder/ms-marco-MiniLM-L6-v2'),
+                        ('--config', 'configs/binary_bbq.yaml')]:
+        with pytest.raises(SystemExit):
+            arguments('/tmp/modern', '--model-family', 'modernbert-base', flag, value)
+
+
+def test_modern_profile_runs_and_cannot_reuse_legacy_embeddings(tmp_path):
+    legacy_dir = tmp_path / 'legacy'
+    comparison.run(arguments(legacy_dir, '--warmup', '0', '--timing-repeats', '1'))
+    modern_dir = tmp_path / 'modern'
+    modern_dir.mkdir()
+    incompatible = arguments(modern_dir, '--model-family', 'modernbert-base', '--prepared-from', str(legacy_dir))
+    with pytest.raises(ValueError, match='different model family'):
+        comparison.prepare_inputs(incompatible, modern_dir)
+    args = arguments(modern_dir, '--model-family', 'modernbert-base', '--warmup', '0', '--timing-repeats', '1')
+    comparison.run(args)
+    quality = pd.read_csv(modern_dir / 'ranking_quality.csv')
+    assert set(quality.scope) == {'shared_modernbert_pool'}
+    assert set(quality.model_family) == {'modernbert-base'}
+    rows = json.loads((modern_dir / 'rankings.json').read_text())
+    for qi in {r['query_id'] for r in rows}:
+        shared = [r for r in rows if r['query_id'] == qi and r['scope'] == 'shared_modernbert_pool']
+        assert len(shared) == 5
+        assert all(r['scored_rows'] == shared[0]['scored_rows'] for r in shared)
+    again = tmp_path / 'modern_reuse'
+    again.mkdir()
+    comparison.prepare_inputs(arguments(again, '--model-family', 'modernbert-base', '--prepared-from', str(modern_dir)), again)
+    assert (again / 'documents.npz').read_bytes() == (modern_dir / 'documents.npz').read_bytes()
+
+
+def test_backbone_guard_checks_architecture_precision_and_size():
+    rows = [dict(method=m, model_type='modernbert', parameters=p, hidden_size=768,
+                 layers=22, attention_heads=12, weight_dtype='torch.float32')
+            for m, p in [('dot', 149000000), ('colbert', 149100000), ('ce', 149600000)]]
+    comparison.validate_modern_backbones(rows)
+    for field, value in [('model_type', 'bert'), ('layers', 12), ('hidden_size', 384),
+                         ('weight_dtype', 'torch.float16'), ('parameters', 23000000)]:
+        altered = [dict(r) for r in rows]
+        altered[-1][field] = value
+        with pytest.raises(ValueError):
+            comparison.validate_modern_backbones(altered)
+
+
+def test_modern_encoder_keeps_query_mode_ragged_tokens_and_input_order():
+    from ras.late_interaction import ModernColBERTEncoder
+    class PylateModel:
+        def encode(self, texts, **kwargs):
+            assert kwargs['padding'] is False
+            assert kwargs['normalize_embeddings'] is True
+            assert kwargs['convert_to_numpy'] is True
+            length = 4 if kwargs['is_query'] else None
+            return [np.full((length or int(t) + 1, 128), int(t), dtype=np.float32) for t in texts]
+    encoder = ModernColBERTEncoder.__new__(ModernColBERTEncoder)
+    encoder.batch_size, encoder.model = 2, PylateModel()
+    docs = encoder.encode(['2', '0', '3'], query=False)
+    assert docs.offsets.tolist() == [0, 3, 4, 8]
+    assert np.all(docs[2] == 3)
+    queries = encoder.encode(['2', '0', '3'], query=True)
+    assert queries.offsets.tolist() == [0, 4, 8, 12]

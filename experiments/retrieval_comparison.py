@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from itertools import combinations
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -16,7 +17,7 @@ from threadpoolctl import threadpool_limits
 from experiments import late_interaction_baselines as legacy
 from ras.composition import compose_query
 from ras.config import load_config
-from ras.late_interaction import ColBERTEncoder, CrossEncoderScorer, MuveraFDE, RaggedEmbeddings, maxsim, topk_ids
+from ras.late_interaction import ColBERTEncoder, ModernColBERTEncoder, CrossEncoderScorer, MuveraFDE, RaggedEmbeddings, maxsim, topk_ids
 from ras.metrics import bootstrap_mean_ci
 from ras.queries import QuerySpec, apply_exact
 from ras.repro import environment_manifest, write_json
@@ -24,6 +25,40 @@ from ras.repro import environment_manifest, write_json
 KEYS = ['scope', 'method', 'candidate_budget', 'k']
 PREPARED = ['prepared.npz', 'documents.npz', 'queries.npz', 'queries.json',
             'metadata.json', 'encoding.json', 'fit_replay.npz', 'calibrations.json']
+MODERN_MODELS = {'dense': 'Alibaba-NLP/gte-modernbert-base',
+                 'colbert': 'lightonai/GTE-ModernColBERT-v1',
+                 'cross_encoder': 'Alibaba-NLP/gte-reranker-modernbert-base'}
+
+
+def pool_scope(args):
+    return 'shared_modernbert_pool' if args.model_family == 'modernbert-base' else 'shared_minilm_pool'
+
+
+def encoder_class(args):
+    return ModernColBERTEncoder if args.model_family == 'modernbert-base' else ColBERTEncoder
+
+
+def modern_dense_model(path):
+    from sentence_transformers import SentenceTransformer
+    import torch
+    model = SentenceTransformer(path,
+        model_kwargs={'torch_dtype': torch.float32, 'attn_implementation': 'sdpa'},
+        config_kwargs={'reference_compile': False})
+    model.ras_resolved_checkpoint = path
+    return model
+
+
+def modern_data(cfg, synthetic):
+    """Regenerate dense vectors/heads; dataset, split and teacher protocol stay fixed."""
+    import torch
+    from experiments.large_scale_search import _metadata_df, _select_dataset, _teacher_embeddings_and_scores
+    ds, keep = _select_dataset(cfg)
+    df = _metadata_df(ds, keep)
+    teacher = _teacher_embeddings_and_scores(ds, cfg, 'cuda' if torch.cuda.is_available() else 'cpu')
+    model = modern_dense_model(resolve_checkpoint(cfg['retrieval']['model']))
+    x = model.encode(df.productDisplayName.tolist(), batch_size=int(cfg['retrieval']['batch_size']),
+                     show_progress_bar=True, normalize_embeddings=True, convert_to_numpy=True).astype(np.float32)
+    return x, teacher, df, model
 
 
 def sync_device():
@@ -49,13 +84,16 @@ def prepare_inputs(args, root):
         verify_prepared(root)
         return
     if not args.prepared_from:
-        legacy.prepare(args, root)
+        legacy.prepare(args, root, encoder_factory=encoder_class(args),
+                       data_loader=modern_data if args.model_family == 'modernbert-base' else None)
         return
     source = Path(args.prepared_from).resolve()
     if source == root.resolve():
         raise ValueError('--prepared-from must be different from --output-dir')
     verify_prepared(source)
     previous = json.loads((source / 'request.json').read_text())
+    if previous.get('model_family', 'legacy') != args.model_family:
+        raise ValueError('prepared source has a different model family; rebuild embeddings in a new directory')
     # Search parameters may change, but every preparation-defining parameter must match.
     for name in ['synthetic', 'seed', 'queries', 'checkpoint', 'revision',
                  'query_maxlen', 'doc_maxlen']:
@@ -101,22 +139,53 @@ def snapshot_bytes(path):
     return sum(p.stat().st_size for p in Path(path).rglob('*') if p.is_file())
 
 
+def backbone_record(method, model, backbone):
+    config = backbone.config
+    return dict(method=method, model_type=getattr(config, 'model_type', None),
+                parameters=sum(p.numel() for p in model.parameters()),
+                hidden_size=getattr(config, 'hidden_size', None),
+                layers=getattr(config, 'num_hidden_layers', None),
+                attention_heads=getattr(config, 'num_attention_heads', None),
+                weight_dtype=str(next(model.parameters()).dtype))
+
+
+def validate_modern_backbones(records):
+    """Fail loudly if a loader/checkpoint change invalidates the declared comparison."""
+    if any(r['model_type'] != 'modernbert' for r in records):
+        raise ValueError('matched profile loaded a non-ModernBERT backbone')
+    for field in ['hidden_size', 'layers', 'attention_heads', 'weight_dtype']:
+        if len({r[field] for r in records}) != 1:
+            raise ValueError(f'matched backbones disagree on {field}')
+    counts = [r['parameters'] for r in records]
+    if min(counts) <= 0 or max(counts) / min(counts) > 1.05:
+        raise ValueError('matched model parameter counts differ by more than 5%')
+
+
 class Models:
     def __init__(self, args, root, arrays, queries):
         self.args, self.arrays, self.queries = args, arrays, queries
         self.dense = self.colbert = self.cross = None
-        self.info = {'synthetic': args.synthetic}
+        self.info = {'synthetic': args.synthetic, 'model_family': args.model_family,
+                     'backbone_matching': 'ModernBERT-base, approximately 149M parameters per model' if
+                         args.model_family == 'modernbert-base' else 'Legacy unmatched MiniLM/BERT models',
+                     'supervision_matching': False}
         self.build_rows = []
         if args.synthetic:
             self.info['note'] = 'Random token embeddings and deterministic stub pair scores; no models executed.'
+            pd.DataFrame([{'method': name, 'model_type': 'synthetic_stub', 'parameters': None}
+                          for name in ['dense_dot_product', 'colbert_exact', 'cross_encoder']
+                          if name != 'cross_encoder' or not args.skip_cross_encoder]).to_csv(root / 'backbones.csv', index=False)
             return
         from sentence_transformers import SentenceTransformer
         cfg = load_config(args.config)
-        dense_path = resolve_checkpoint(cfg['retrieval']['model'])
-        self.dense, ms = measured(lambda: SentenceTransformer(dense_path))
+        encoding = json.loads((root / 'encoding.json').read_text())
+        saved_dense = encoding.get('dense_resolved_checkpoint')
+        dense_revision = Path(saved_dense).name if saved_dense and '/snapshots/' in saved_dense else None
+        dense_path = saved_dense if saved_dense and Path(saved_dense).is_dir() else resolve_checkpoint(cfg['retrieval']['model'], dense_revision)
+        modern = args.model_family == 'modernbert-base'
+        self.dense, ms = measured(lambda: modern_dense_model(dense_path) if modern else SentenceTransformer(dense_path))
         self.build_rows.append(build_row('dense_dot_product', 'model_load', ms / 1000, 'current_run'))
         # Reuse the actual ColBERT snapshot, not a moving model alias, when importing.
-        encoding = json.loads((root / 'encoding.json').read_text())
         saved = encoding.get('resolved_checkpoint')
         if saved and Path(saved).is_dir():
             checkpoint, revision = saved, None
@@ -124,7 +193,7 @@ class Models:
             checkpoint, revision = args.checkpoint, args.revision
             if saved and '/snapshots/' in saved:
                 revision = Path(saved).name
-        self.colbert, ms = measured(lambda: ColBERTEncoder(
+        self.colbert, ms = measured(lambda: encoder_class(args)(
             checkpoint, revision=revision, query_maxlen=args.query_maxlen,
             doc_maxlen=args.doc_maxlen, batch_size=args.batch_size))
         self.build_rows.append(build_row('colbert_exact', 'model_load', ms / 1000, 'current_run'))
@@ -139,12 +208,27 @@ class Models:
         if not args.skip_cross_encoder:
             self.cross, ms = measured(lambda: CrossEncoderScorer(
                 args.cross_encoder_checkpoint, revision=args.cross_encoder_revision,
-                max_length=args.cross_encoder_maxlen, batch_size=args.cross_encoder_batch_size))
+                max_length=args.cross_encoder_maxlen, batch_size=args.cross_encoder_batch_size, modern=modern))
             self.build_rows.append(build_row('cross_encoder', 'model_load', ms / 1000, 'current_run'))
             self.info.update(cross_encoder_checkpoint=self.cross.resolved_checkpoint,
                              cross_encoder_device=str(next(self.cross.model.model.parameters()).device),
                              cross_encoder_model_tensor_B=model_payload(self.cross.model.model),
                              cross_encoder_snapshot_disk_B=snapshot_bytes(self.cross.resolved_checkpoint))
+        records = [backbone_record('dense_dot_product', self.dense, self.dense[0].auto_model),
+                   backbone_record('colbert_exact', self.colbert.model,
+                                   self.colbert.model[0].auto_model if modern else getattr(self.colbert.model, 'bert', self.colbert.model))]
+        if self.cross is not None:
+            records.append(backbone_record('cross_encoder', self.cross.model.model, self.cross.model.model))
+        if modern:
+            validate_modern_backbones(records)
+        self.info['backbones'] = records
+        self.info['input_limits'] = {'dense_max_seq_length': self.dense.max_seq_length,
+                                     'colbert_query_maxlen': args.query_maxlen,
+                                     'colbert_document_maxlen': args.doc_maxlen,
+                                     'cross_encoder_pair_maxlen': args.cross_encoder_maxlen}
+        if modern:
+            self.info['colbert_query_expansion'] = self.colbert.model.do_query_expansion
+        pd.DataFrame(records).to_csv(root / 'backbones.csv', index=False)
 
     def dense_query(self, text, qi):
         if self.args.synthetic:
@@ -177,7 +261,7 @@ def write_summaries(frame, root, args):
     for key, group in frame.groupby(KEYS):
         by_query = group.groupby('query_id').mean(numeric_only=True)
         entry = dict(zip(KEYS, key))
-        entry.update(queries=len(by_query), synthetic=args.synthetic,
+        entry.update(queries=len(by_query), synthetic=args.synthetic, model_family=args.model_family,
                      zero_truth_queries=int((by_query.total_relevant == 0).sum()))
         for metric in metrics:
             entry.update({metric + '_' + stat: value for stat, value in
@@ -185,11 +269,11 @@ def write_summaries(frame, root, args):
         summary.append(entry)
     summary = pd.DataFrame(summary)
     summary.to_csv(root / 'summary.csv', index=False)
-    quality = ['scope', 'method', 'candidate_budget', 'k', 'queries', 'synthetic',
+    quality = ['scope', 'method', 'model_family', 'candidate_budget', 'k', 'queries', 'synthetic',
                'recall_mean', 'precision_at_k_mean', 'ndcg_mean', 'fill_rate_mean',
                'pool_relevant_coverage_mean', 'ndcg_lo', 'ndcg_hi']
     # Keep relevance and approximation in separate, explicitly named tables.
-    summary.loc[summary.scope == 'shared_minilm_pool', quality].to_csv(root / 'ranking_quality.csv', index=False)
+    summary.loc[summary.scope.str.startswith('shared_'), quality].to_csv(root / 'ranking_quality.csv', index=False)
     summary.loc[summary.scope == 'full_corpus', quality].to_csv(root / 'retrieval_quality.csv', index=False)
     approximation = ['method', 'candidate_budget', 'k', 'queries', 'synthetic',
                      'colbert_topk_recall_mean', 'colbert_topk_recall_lo',
@@ -230,7 +314,7 @@ def write_summaries(frame, root, args):
 
 
 def write_paired_deltas(frame, root):
-    shared = frame[frame.scope == 'shared_minilm_pool']
+    shared = frame[frame.scope.str.startswith('shared_')]
     rows = []
     for metric in ['ndcg', 'precision_at_k', 'recall']:
         values = shared.groupby(['query_id', 'method'])[metric].mean().unstack('method')
@@ -362,10 +446,10 @@ def evaluate(root, args):
     all_ids = np.arange(n)
     rows, rankings, coverage, judgment_pool = [], [], [], []
     rng = np.random.default_rng(args.seed)
-    methods = [('shared_minilm_pool', m, args.pool_size) for m in
+    methods = [(pool_scope(args), m, args.pool_size) for m in
                ['dense_dot_product', 'colbert_exact', 'binary_predicates', 'linear_predicates']]
     if not args.skip_cross_encoder:
-        methods.append(('shared_minilm_pool', 'cross_encoder', args.pool_size))
+        methods.append((pool_scope(args), 'cross_encoder', args.pool_size))
     methods += [('full_corpus', m, 0) for m in ['dense_dot_product', 'colbert_exact']]
     for budget in args.candidates:
         methods.append(('full_corpus', 'muvera_flat_maxsim', budget))
@@ -403,10 +487,10 @@ def evaluate(root, args):
                 request_eligible = all_ids[request_mask]
                 ids = request_eligible
                 candidate_ids = None
-                if scope == 'shared_minilm_pool' or method == 'dense_dot_product':
+                if scope.startswith('shared_') or method == 'dense_dot_product':
                     dense_q, ms = measured(lambda: models.dense_query(spec.text, qi))
                     stage['query_encoding_ms'] += ms
-                    if scope == 'shared_minilm_pool':
+                    if scope.startswith('shared_'):
                         def get_pool():
                             found = topk_ids(arrays['dense_items'] @ dense_q, all_ids, args.pool_size)
                             return found[request_mask[found]]
@@ -453,16 +537,16 @@ def evaluate(root, args):
                 timing_scope = ('pool_generation_plus_materialized_predicate_composition' if method.endswith('predicates') else
                                 'sequential_request_including_query_encoding')
                 row = dict(query_id=spec.query_id, scope=scope, method=method, candidate_budget=budget,
-                           k=args.k, repeat=repeat, synthetic=args.synthetic, timing_scope=timing_scope,
+                           k=args.k, repeat=repeat, synthetic=args.synthetic, model_family=args.model_family, timing_scope=timing_scope,
                            total_ms=total_ms, **stage,
                            eligible_count=len(eligible), scored_count=len(ids),
                            candidate_count=len(candidate_ids) if candidate_ids is not None else len(ids),
                            candidate_survival_rate=(len(ids) / len(candidate_ids) if candidate_ids is not None and len(candidate_ids) else np.nan),
-                           pool_relevant_coverage=pool_coverage if scope == 'shared_minilm_pool' else np.nan,
-                           runtime_pool_overlap=(legacy.overlap(runtime_pool, common) if scope == 'shared_minilm_pool' else np.nan),
+                           pool_relevant_coverage=pool_coverage if scope.startswith('shared_') else np.nan,
+                           runtime_pool_overlap=(legacy.overlap(runtime_pool, common) if scope.startswith('shared_') else np.nan),
                            colbert_topk_recall=legacy.overlap(selected, oracle) if scope == 'full_corpus' else np.nan,
                            eligible_colbert_candidate_recall=legacy.overlap(candidate_ids, oracle) if candidate_ids is not None else np.nan,
-                           **legacy.ranking_metrics(pool_truth if scope == 'shared_minilm_pool' else truth, selected, args.k))
+                           **legacy.ranking_metrics(pool_truth if scope.startswith('shared_') else truth, selected, args.k))
                 rows.append(row)
                 if repeat == 0:
                     rankings.append(dict(query_id=spec.query_id, scope=scope, method=method,
@@ -479,11 +563,13 @@ def evaluate(root, args):
     write_json(root / 'scope.json', {
         'schema_version': 2,
         'label_source': 'synthetic' if args.synthetic else 'CLIP image teacher; not independent human judgments',
-        'ranking_quality': 'Same frozen MiniLM candidate rows and title input for dot product, ColBERT, cross-encoder and predicate controls. Recall denominator is pool truth.',
+        'ranking_quality': 'Same frozen dense-retrieved candidate rows and title input for dot product, ColBERT, cross-encoder and predicate controls. Recall denominator is pool truth.',
         'retrieval_quality': 'Full held-out catalogue truth, not shared-pool truth.',
         'approximation': 'Exact ColBERT top-K is a scoring reference, not relevance ground truth.',
-        'dot_product': 'Normalized MiniLM title/query vectors; exact inner product (equivalent to cosine here). No learned predicates.',
-        'cross_encoder': 'Pretrained MS MARCO default; not an oracle. Joint query/title inference per request; no per-document CE index.',
+        'model_family': args.model_family,
+        'pool_scope': pool_scope(args),
+        'dot_product': 'Normalized configured dense title/query vectors; exact inner product (equivalent to cosine here). No learned predicates.',
+        'cross_encoder': 'Configured pretrained cross-encoder; not an oracle. Joint query/title inference per request; no per-document CE index.',
         'filters': 'Full exact scans prefilter; common pool and MUVERA postfilter a global candidate budget. Underfill and candidate survival reported, no hidden refill.',
         'timing': 'Sequential warmed reference requests, concurrency=1, live query encoding and pool generation included. Scoring uses fixed prepared query vectors to isolate approximation from numerical encoding drift. CE pair tokenization/inference is scoring_ms. Model load/build/network excluded. Shared scorers use frozen quality pool; runtime pool overlap recorded.',
         'predicates': 'Quality controls with offline materialized logits. Latency excludes predicate execution; not a complete serving pipeline.',
@@ -491,6 +577,7 @@ def evaluate(root, args):
         'build_time': 'Component seconds; ColBERT uses saved preparation timing, dense a fresh verification pass. Imported times may originate on different hardware; provenance column is mandatory.',
         'limitations': ['Teacher supervision favors task-specific predicates; human/behavioral relevance still needed.',
                        'ColBERT MaxSim is CPU NumPy, not PLAID; CE/encoding may run on GPU. See models.json.',
+                       'Modern family matches backbone/capacity, not fine-tuning supervision. Shared pool changes across model families.',
                        'Single-request p99 with few samples is descriptive, not a production SLA or throughput test.',
                        'Matched-fidelity choices use this run mean recall; validate selected settings on separate queries.',
                        'Whole-process peak RSS is not isolated per-method serving memory.',
@@ -520,7 +607,11 @@ def run(args):
 
 
 def parse_args(argv=None):
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument('--model-family', choices=['legacy', 'modernbert-base'], default='legacy')
+    profile, _ = probe.parse_known_args(argv)
     parser = legacy.build_parser()
+    parser.add_argument('--model-family', choices=['legacy', 'modernbert-base'], default='legacy')
     parser.description = __doc__
     parser.set_defaults(timing_repeats=3)
     parser.add_argument('--prepared-from', help='Completed v1/v2 run with matching preparation; results go to a new directory')
@@ -531,7 +622,16 @@ def parse_args(argv=None):
     parser.add_argument('--skip-cross-encoder', action='store_true')
     parser.add_argument('--warmup', type=int, default=1)
     parser.add_argument('--target-recalls', type=float, nargs='+', default=[.90, .95, .99])
+    if profile.model_family == 'modernbert-base':
+        parser.set_defaults(config='configs/modern_backbones.yaml', checkpoint=MODERN_MODELS['colbert'],
+                            cross_encoder_checkpoint=MODERN_MODELS['cross_encoder'],
+                            query_maxlen=48, doc_maxlen=300, cross_encoder_maxlen=512)
     args = legacy.validate_args(parser.parse_args(argv), parser)
+    if args.model_family == 'modernbert-base':
+        if (load_config(args.config)['retrieval']['model'] != MODERN_MODELS['dense']
+                or args.checkpoint != MODERN_MODELS['colbert']
+                or args.cross_encoder_checkpoint != MODERN_MODELS['cross_encoder']):
+            parser.error('modernbert-base profile requires the three matched ModernBERT checkpoints')
     if args.pool_size < args.k:
         parser.error('--pool-size must be at least k')
     if args.warmup < 0 or min(args.cross_encoder_maxlen, args.cross_encoder_batch_size) < 1:

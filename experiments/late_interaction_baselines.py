@@ -41,7 +41,7 @@ def normalize(x):
     return (x / np.maximum(np.linalg.norm(x, axis=-1, keepdims=True), 1e-12)).astype(np.float32)
 
 
-def prepare(args, root):
+def prepare(args, root, *, encoder_factory=ColBERTEncoder, data_loader=None):
     """Fit predicates on fit rows only; reuse upstream fashion data and query protocol."""
     cfg = load_config(args.config)
     if args.synthetic:
@@ -55,7 +55,7 @@ def prepare(args, root):
         model = None
     else:
         from experiments.review_followup import data
-        x, teacher, df, model = data(cfg, False)
+        x, teacher, df, model = (data_loader or data)(cfg, False)
     if not df.id.is_unique:
         raise ValueError('catalogue IDs must be unique')
     split = make_protocol_split(len(x), args.seed, strict=True)
@@ -99,8 +99,9 @@ def prepare(args, root):
         start = time.perf_counter()
         dense_queries = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
         dense_seconds = time.perf_counter() - start
+        dense_resolved = getattr(model, 'ras_resolved_checkpoint', None)
         del model
-        encoder = ColBERTEncoder(args.checkpoint, revision=args.revision,
+        encoder = encoder_factory(args.checkpoint, revision=args.revision,
                                  query_maxlen=args.query_maxlen, doc_maxlen=args.doc_maxlen,
                                  batch_size=args.batch_size)
         start = time.perf_counter()
@@ -110,6 +111,7 @@ def prepare(args, root):
         query_tokens = encoder.encode(texts, query=True)
         encoding = {'synthetic': False, 'checkpoint': args.checkpoint,
                     'resolved_checkpoint': encoder.resolved_checkpoint,
+                    'dense_resolved_checkpoint': dense_resolved,
                     'document_encoding_seconds': document_seconds,
                     'query_encoding_seconds': time.perf_counter() - start,
                     'dense_query_encoding_seconds': dense_seconds,

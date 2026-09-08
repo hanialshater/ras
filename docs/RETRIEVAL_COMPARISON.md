@@ -145,3 +145,66 @@ PYTHONPATH=src:. OPENBLAS_NUM_THREADS=1 python -m experiments.retrieval_comparis
 Every synthetic row is marked. The cross-encoder is a deterministic score stub in
 synthetic mode, not an executed neural model. `rankings.json` saves candidate,
 scored and returned identities; the ZIP includes checksums and all reports.
+
+## Matched modern backbone profile
+
+[Open the ModernBERT Colab notebook](https://colab.research.google.com/github/hanialshater/ras/blob/codex/colbert-muvera-baselines/notebooks/ras_modern_backbones_colab.ipynb).
+Use a fresh GPU runtime. The historical notebook and `--model-family legacy`
+remain available.
+
+| Role | Checkpoint | Backbone / output |
+|---|---|---|
+| Dot product | [Alibaba-NLP/gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) | ModernBERT-base, ~149M; one 768-dimensional vector |
+| ColBERT | [lightonai/GTE-ModernColBERT-v1](https://huggingface.co/lightonai/GTE-ModernColBERT-v1) | Initialized from that GTE dense model; adds a trained 768→128 token projection |
+| Cross-encoder | [Alibaba-NLP/gte-reranker-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-reranker-modernbert-base) | ModernBERT-base, ~149M; one joint query/title score |
+
+This approximately matches backbone family and model capacity. It does **not**
+match fine-tuning supervision: ModernColBERT uses MS MARCO/BGE-Gemma distillation;
+the GTE dense and reranker models follow their respective GTE training recipes.
+All three are English checkpoints. An architecture-only study still requires
+training the three heads with controlled data/teacher/budget.
+
+The profile loads all neural models in FP32 with SDPA and disables ModernBERT's
+internal reference compilation consistently. Actual model type, hidden width,
+layer/head counts, parameter counts and weight dtype are recorded in
+`backbones.csv` and `models.json`. The run refuses mismatched architecture fields,
+precision or parameter counts differing by more than 5%. Model revisions resolve
+to recorded snapshots; dense/ColBERT snapshots are reused on prepared-input imports.
+
+PyLate 1.6.0 performs ModernColBERT encoding, preserving the checkpoint's trained
+projection, token markers, punctuation masking, normalization and query expansion.
+The adapter rejects checkpoints without a saved Dense projection. It does not
+pass ModernBERT through the legacy `colbert-ai` BERT wrapper or initialize a new
+random token projection. Reference MaxSim and MUVERA still share identical saved
+token matrices and CPU scoring.
+
+```bash
+pip install -e '.[dev,benchmark,modern-retrieval]'
+python -m experiments.retrieval_comparison \
+  --model-family modernbert-base \
+  --output-dir results/modernbert_base_seed7 \
+  --queries 30 --seed 7 --k 50 --pool-size 5000 \
+  --candidates 100 500 1000 2000 5000 --backend hnsw
+```
+
+This selects `configs/modern_backbones.yaml`, the matched checkpoints, 48/300
+ColBERT query/document limits and a 512-token CE pair limit. The saved ModernColBERT
+configuration specifies query length 48 and disables query expansion; it takes
+precedence over the model card's older 32-token description. Model tokenization and
+truncation formats remain native, not identical token budgets. The model IDs are
+fixed by this profile; incompatible overrides are rejected.
+
+Dense item/query embeddings and the supervised predicate controls are rebuilt.
+The source dataset, split seed, query-generation protocol and CLIP label definition
+remain the same. **The pool is now selected by GTE-ModernBERT**, and results use
+`shared_modernbert_pool` with a `model_family` column. All five rankers receive
+identical candidates within this run, but the new pool is not identical to the
+old MiniLM pool. Do not attribute historical-to-modern shared-pool changes solely
+to the scorer; use pool coverage and full-corpus controls when comparing runs.
+
+Legacy prepared inputs are explicitly rejected by the modern profile. Only a
+matching completed modern run can be supplied through `--prepared-from`. The
+notebook defaults to fresh encoding and a separate `ras_modernbert_base_seed7_v1`
+Drive directory. Library pins are compatible with the existing Transformers 4.49
+teacher path; downloaded wheel metadata was checked. Real neural execution still
+requires the GPU notebook; synthetic validation does not load the checkpoints.
