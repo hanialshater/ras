@@ -111,3 +111,36 @@ def test_full_candidate_budget_and_empty_filters(tmp_path):
     actual = {r['method']: r['selected_rows'] for r in rows
               if r['query_id'] == queries[1]['query_id'] and r['scope'] == 'full_corpus'}
     assert actual['muvera_flat_maxsim'] == actual['colbert_exact']
+
+
+def notebook_process_runner():
+    import ast
+    import json
+    from pathlib import Path
+    notebook = json.loads((Path(__file__).parents[1] /
+        'notebooks/ras_late_interaction_colab.ipynb').read_text())
+    source = ast.parse(''.join(notebook['cells'][1]['source']))
+    function = next(node for node in source.body
+                    if isinstance(node, ast.FunctionDef) and node.name == 'run_logged')
+    namespace = {}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), '<notebook-runner>', 'exec'), namespace)
+    return namespace['run_logged']
+
+
+def test_notebook_failure_surfaces_stderr_and_saves_log(tmp_path, capsys):
+    import sys
+    runner = notebook_process_runner()
+    log = tmp_path / 'nested' / 'failure.log'
+    with pytest.raises(RuntimeError, match='underlying failure'):
+        runner([sys.executable, '-u', '-c',
+                "import sys; print('progress', flush=True); raise ValueError('underlying failure')"],
+               log_path=log)
+    assert 'ValueError: underlying failure' in log.read_text()
+    assert 'ValueError: underlying failure' in capsys.readouterr().out
+
+
+def test_notebook_success_streams_output(tmp_path, capsys):
+    import sys
+    assert notebook_process_runner()([sys.executable, '-c', "print('finished')"],
+                                     log_path=tmp_path / 'success.log') == 0
+    assert 'finished' in capsys.readouterr().out
