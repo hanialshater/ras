@@ -47,13 +47,24 @@ def test_native_evaluation_and_candidate_loss(tmp_path):
         model_card_data = SimpleNamespace(set_evaluation_metrics=lambda *a: None)
         def __init__(self, multi):
             self.multi = multi
+            self.calls = []
+        def encode_query(self, texts, **kwargs):
+            self.calls.append('query')
+            return self.encode(texts, **kwargs)
+        def encode_document(self, texts, **kwargs):
+            self.calls.append('document')
+            return self.encode(texts, **kwargs)
         def encode(self, texts, **kwargs):
+            if self.multi:
+                self.calls.append('query' if kwargs['is_query'] else 'document')
             vectors = {'red': [1., 0.], 'blue': [0., 1.], 'red blue': [.8, .6]}
             tensors = [torch.tensor(vectors[t]) for t in texts]
             return [t.unsqueeze(0) for t in tensors] if self.multi else torch.stack(tensors)
     for multi in [False, True]:
-        metrics, ranks = native_retrieval(Toy(multi), data, tmp_path / str(multi),
+        model = Toy(multi)
+        metrics, ranks = native_retrieval(model, data, tmp_path / str(multi),
             colbert=multi, batch_size=2, chunk_size=2)
+        assert model.calls == ['query', 'document', 'document']
         assert {r['corpus_id'] for r in ranks['q']} == set(data['corpus'])
         key = 'MaxSim_ndcg@10' if multi else 'cosine_ndcg@10'
         assert metrics[key] == pytest.approx(1)
