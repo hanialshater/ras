@@ -17,7 +17,9 @@ python -m experiments.upstream_nanobeir --phase compare --output-dir runs/upstre
 All 13 NanoBEIR datasets are the default. For a smoke run append
 `--datasets scifact nfcorpus` to both commands. A subset is not the full NanoBEIR mean.
 The runner resumes completed datasets with the same environment, source and settings.
-Use a new output directory when changing batch/chunk sizes, packages or source.
+Use a new output directory when changing batch/chunk sizes or packages. A source-only
+fix can resume data preparation if no reference/comparison artifacts exist; the prior
+manifest is archived. After scoring starts, source changes require a new directory.
 `--pool-size 100` is the comparison default; 500 or 1000 creates another comparison directory.
 
 ## Reference reproduction
@@ -28,6 +30,7 @@ Use the checkpoint's native PyLate encoding settings and PyLate's
 nonempty text fields, binary relevant-document sets, train splits, no self-ID exclusion.
 Resolve each dataset to an immutable Hub revision and save the actual corpus, queries,
 qrels and a content checksum. Both phases consume that saved snapshot.
+Use `--phase data --device cpu` to audit all 13 real datasets without loading models.
 
 Model revisions are pinned in the script. PyLate 1.6.0, Sentence Transformers 5.3.0,
 Transformers 4.49.0 and rank-bm25 0.2.2 are pinned; all actual key package versions are
@@ -65,8 +68,10 @@ check ID-set equality and evaluate all using Sentence Transformers' IR metric im
 This pool favors the dense retriever's candidates; it measures reranking conditional on
 that retriever. We do not inject positives. Candidate relevance coverage is reported.
 
-All relevance denominators, including shared-pool nDCG's ideal ranking, use the full
-NanoBEIR corpus qrels. Therefore missing relevant candidates remain a penalty, consistently.
+All relevance denominators, including shared-pool nDCG's ideal ranking, use all
+upstream qrels, including relevant IDs absent from the loaded nonempty-text corpus.
+This matches the upstream evaluator; missing IDs are not silently removed.
+`data_audit.json` lists affected queries, counts and missing IDs for each dataset. Therefore missing relevant candidates remain a penalty, consistently.
 This differs from the old experiment's conditional shared-pool recall denominator.
 The input strings are identical across models, but native tokenization/truncation differs:
 ColBERT checkpoint defaults, dense checkpoint defaults and CE pair max length 512.

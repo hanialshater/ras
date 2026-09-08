@@ -48,6 +48,47 @@ def table(path, rows):
         writer.writerows(rows)
 
 
+def prepare_data(parts, repo, revision):
+    """Preserve upstream qrels, including references to unavailable documents."""
+    corpus = {str(x['_id']): x['text'] for x in parts['corpus'] if x['text']}
+    queries = {str(x['_id']): x['text'] for x in parts['queries'] if x['text']}
+    qrels = {}
+    for x in parts['qrels']:
+        if float(x.get('score', 1)) <= 0:
+            raise ValueError('Nonpositive qrel: native NanoBEIR binary semantics need review')
+        qrels.setdefault(str(x['query-id']), set()).add(str(x['corpus-id']))
+    queries = {qid: text for qid, text in queries.items() if qrels.get(qid)}
+    if not queries or not corpus:
+        raise ValueError(f'Empty dataset: {repo}')
+    return dict(repo=repo, revision=revision, corpus=corpus, queries=queries,
+                qrels={q: sorted(qrels[q]) for q in queries})
+
+
+def audit_data(name, data):
+    missing = {q: sorted(set(ids) - data['corpus'].keys()) for q, ids in data['qrels'].items()}
+    absent = {q: ids for q, ids in missing.items() if ids}
+    return dict(dataset=name, corpus_count=len(data['corpus']), queries=len(data['queries']),
+                missing_qrel_pairs=sum(map(len, absent.values())),
+                affected_queries=len(absent), missing_ids_by_query=absent,
+                policy='Retain all upstream qrels and their metric denominators')
+
+
+def check_manifest(root, config):
+    """Permit a source fix during data preparation, never mix scored results."""
+    manifest = root / 'manifest.json'
+    config = json.loads(json.dumps(config))
+    if manifest.exists():
+        old = json.loads(manifest.read_text())
+        changed = {key for key in old.keys() | config.keys() if old.get(key) != config.get(key)}
+        if changed:
+            preparation_only = not any(root.glob('*/reference/*')) and not any(root.glob('comparison_pool*'))
+            if changed != {'script_sha256'} or not preparation_only:
+                raise ValueError('Configuration changed: use a new output directory')
+            save(root / 'manifest_history' / (digest(old) + '.json'), old)
+            print('Resuming cached data preparation after source update; no scored results exist.', flush=True)
+    save(manifest, config)
+
+
 def load_data(name, root):
     """Same text and binary qrels preparation as PyLate's NanoBEIR loader, pinned."""
     from datasets import load_dataset
@@ -64,21 +105,7 @@ def load_data(name, root):
     revision = HfApi().dataset_info(repo).sha
     parts = {part: load_dataset(repo, part, split='train', revision=revision)
              for part in ['corpus', 'queries', 'qrels']}
-    corpus = {str(x['_id']): x['text'] for x in parts['corpus'] if x['text']}
-    queries = {str(x['_id']): x['text'] for x in parts['queries'] if x['text']}
-    qrels = {}
-    for x in parts['qrels']:
-        if float(x.get('score', 1)) <= 0:
-            raise ValueError('Nonpositive qrel: native NanoBEIR binary semantics need review')
-        qrels.setdefault(str(x['query-id']), set()).add(str(x['corpus-id']))
-    # Preserve official corpus/text order, and the evaluator's query selection.
-    queries = {qid: text for qid, text in queries.items() if qrels.get(qid)}
-    if not queries or not corpus:
-        raise ValueError('Empty dataset')
-    if any(not qrels[qid] <= corpus.keys() for qid in queries):
-        raise ValueError('Relevant documents missing from corpus')
-    data = dict(repo=repo, revision=revision, corpus=corpus, queries=queries,
-                qrels={q: sorted(qrels[q]) for q in queries})
+    data = prepare_data(parts, repo, revision)
     save(path, dict(data, sha256=digest(data)))
     return data
 
@@ -227,13 +254,10 @@ def run(args):
     config = dict(models=MODEL_IDS, versions=versions, seed=args.seed, device=args.device,
                   chunk_size=args.chunk_size, batch_size=args.batch_size,
                   script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
-    manifest = root / 'manifest.json'
-    if manifest.exists() and json.loads(manifest.read_text()) != json.loads(json.dumps(config)):
-        raise ValueError('Configuration changed: use a new output directory')
-    save(manifest, config)
+    check_manifest(root, config)
     save(root / 'scope.json', dict(
         labels='Official NanoBEIR binary qrels; same semantics as PyLate NanoBEIREvaluator',
-        metric_denominator='All relevant documents in each NanoBEIR corpus, also for shared pools',
+        metric_denominator='All upstream qrels, including unavailable document IDs, also for shared pools',
         text='Official NanoBEIR text fields; no metadata filters, CLIP labels or RAS code',
         precision='FP32; SDPA; PyLate torch scoring backend',
         lengths='Checkpoint defaults; CE pair limit 512. Same source text, differing token limits.',
@@ -242,7 +266,17 @@ def run(args):
         reference='Per-dataset upstream PyLate evaluator, as used by NanoBEIREvaluator; binary qrels',
         caveat='Model card lacks a complete historical environment lock. A discrepancy is reported, not hidden.',
         padding='Upstream PyLate padded scoring semantics retained; not the old ragged NumPy scorer.'))
-    data_by_name = {name: load_data(name, root) for name in args.datasets}
+    data_by_name = {}
+    audits = []
+    for name in args.datasets:
+        print(f'DATASET_LOAD {name}', flush=True)
+        data_by_name[name] = load_data(name, root)
+        audit = audit_data(name, data_by_name[name])
+        audits.append(audit)
+        save(root / 'data_audit.json', audits)
+        print(json.dumps({k: v for k, v in audit.items() if k != 'missing_ids_by_query'}), flush=True)
+    if args.phase == 'data':
+        return
     if args.phase == 'reference':
         model, meta = model_load('colbert', args.device)
         save(root / 'colbert_model.json', meta)
@@ -355,7 +389,7 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--phase', choices=['reference', 'compare'], required=True)
+    p.add_argument('--phase', choices=['data', 'reference', 'compare'], required=True)
     p.add_argument('--output-dir', required=True)
     p.add_argument('--datasets', nargs='+', choices=list(CARD), default=list(CARD))
     p.add_argument('--device', choices=['cuda', 'cpu'], default='cuda')

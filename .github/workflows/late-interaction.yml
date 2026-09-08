@@ -19,6 +19,8 @@ jobs:
       - run: pip install -e '.[upstream-retrieval,dev]'
       - run: python -c 'import torch, pylate, sentence_transformers'
       - run: python -m pytest -q tests/test_upstream_nanobeir.py
+      - name: Validate all 13 real NanoBEIR datasets without model downloads
+        run: python -m experiments.upstream_nanobeir --phase data --device cpu --output-dir /tmp/nanobeir-data-audit
       - name: Check upstream notebook syntax
         run: |
           python - <<'PY'
