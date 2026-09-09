@@ -1,0 +1,9 @@
+{
+  "repository": "google/graph-mining",
+  "revision": "dca52ed1c35ca530d11ea7f76b0bf74634cdeb5c",
+  "sha256": {
+    "sketching/point_cloud/fixed_dimensional_encoding.cc": "1a7f741632e690d28e5290fd9528b16a13d9326f4fb73af2300610fc928b614e",
+    "sketching/point_cloud/fixed_dimensional_encoding.h": "560ef4ee16cf0ce14d9757de00dee787bb58bbe88c5ae43a5732db6a7db0db42",
+    "sketching/point_cloud/fixed_dimensional_encoding_config.proto": "a9a3bda67b0923441cdf62b1544869d214be5057fab3725f519dd097e39d1ac5"
+  }
+}
