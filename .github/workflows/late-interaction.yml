@@ -44,7 +44,7 @@ jobs:
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e '.[upstream-retrieval,wands,wands-systems,dev]'
       - run: python -c 'import torch, pylate, sentence_transformers, faiss, psutil, ir_measures'
-      - run: python -m pytest -q tests/test_upstream_nanobeir.py tests/test_wands_comparison.py tests/test_wands_systems.py tests/test_wands_followup.py
+      - run: python -m pytest -q tests/test_upstream_nanobeir.py tests/test_wands_comparison.py tests/test_wands_systems.py tests/test_wands_followup.py tests/test_wands_predicates.py
       - name: Validate the real WANDS source without model downloads
         run: python -m experiments.wands_comparison --phase data --device cpu --output-dir /tmp/wands-data-audit
       - name: Smoke test real WANDS model checkpoints
@@ -65,7 +65,7 @@ jobs:
           python - <<'PY'
           import ast, json
           from pathlib import Path
-          for name in ['ras_upstream_nanobeir_colab.ipynb', 'ras_wands_colab.ipynb', 'ras_wands_muvera_cost_colab.ipynb', 'ras_wands_followup_colab.ipynb']:
+          for name in ['ras_upstream_nanobeir_colab.ipynb', 'ras_wands_colab.ipynb', 'ras_wands_muvera_cost_colab.ipynb', 'ras_wands_followup_colab.ipynb', 'ras_wands_predicates_colab.ipynb']:
               nb = json.loads((Path('notebooks') / name).read_text())
               for cell in nb['cells']:
                   if cell['cell_type'] == 'code':
