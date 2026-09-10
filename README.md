@@ -29,6 +29,16 @@ See [protocol and artifacts](docs/REVIEW_EXPERIMENTS.md).
 The existing measurements below are historical. They have not been recomputed
 with the corrected all-query purity aggregation or the new comparisons.
 
+## ColBERT and MUVERA baselines (new; model results pending)
+
+[Review findings](docs/REVIEW_LATE_INTERACTION.md) and
+[baseline protocol](docs/LATE_INTERACTION.md) separate shared-pool quality,
+full-catalogue retrieval and approximation fidelity.
+
+[Open the Colab](https://colab.research.google.com/github/hanialshater/ras/blob/codex/colbert-muvera-baselines/notebooks/ras_late_interaction_colab.ipynb)
+to run pretrained ColBERTv2 and a MUVERA reference/Faiss HNSW baseline on the
+same held-out products and queries. Real fashion results are pending.
+
 ## Headline results
 
 ### Semantic quality
@@ -305,3 +315,4 @@ The most important next experiments are the extended matched-recall over-fetch
 frontier, million-scale graph/QPS measurements, external datasets and stronger or
 human semantic judgments, and representation learning that makes semantic
 predicates more locally linear before compilation.
+

@@ -2,6 +2,16 @@
 
 This note collects research ideas that are intentionally **not part of the current paper claim**. The current evidence supports compact compiled semantic predicates and their use as soft eligibility tests inside ANN traversal. The directions below ask how far that idea can be pushed.
 
+## Current experiment: representations, local heads, and oracle gaps
+
+The [WANDS predicate study](WANDS_PREDICATES.md) implements the next controlled RAS experiment: frozen MiniLM/DenseOn/LateOn representations, global versus local heads, and FP32 → Binary1 → int4 compilation. The default omits structured label fields from input text and uses explicit catalog attributes with unknown values retained as unknown. A pooled LateOn control accompanies the token-max head. Shared candidates separate coverage and return-budget ceilings from FP32 modelling and compilation losses. This is a new predicate pilot, not a claim that the earlier MUVERA diagnostics met a production fidelity target.
+
+- [x] Implement split-safe labels, cached encoders, global/local heads, and gap accounting.
+- [x] Add numerical/compiler regression tests and an end-to-end real-checkpoint smoke run.
+- [ ] Run the 12,000-product Colab pilot and inspect per-concept support and local fallbacks.
+- [ ] Confirm useful modelling gains across additional splits; independently annotate subjective predicates.
+- [ ] Measure isolated serving costs and integrate the selected head into RAS traversal.
+
 ## 0. Reproduce ColBERT and MUVERA before representation research
 
 Before changing the retrieval representation or claiming a new interaction with late-interaction models, establish clean reproductions of the two upstream ingredients.
