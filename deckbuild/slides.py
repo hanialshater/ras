@@ -30,6 +30,8 @@ class Ctx:
     eq_dir: Path
     fig_dir: Path
     figure_log: list = field(default_factory=list)      # (slide, paper, label, file|placeholder, license)
+    slide_of: dict = field(default_factory=dict)        # stable slide id -> position in the deck
+    registry: list = field(default_factory=list)
     layout_log: list = field(default_factory=list)
 
 
@@ -38,6 +40,7 @@ def new_slide(prs, dark=False):
     s = prs.slides.add_slide(prs.slide_layouts[6])
     set_bg(s, DARK if dark else BG)
     s._internal_figs = False
+    s._n = len(prs.slides._sldIdLst)
     return s
 
 
@@ -46,7 +49,8 @@ def chrome(ctx, s, n, kicker, title, footer):
              char_spacing=1.5, name="Kicker")
     add_text(s, MARGIN, 0.74, CW, 0.8, title, size=28, font=HEAD_FONT, color=INK,
              anchor=MSO_ANCHOR.TOP, name="Title")
-    s._footer = (n, footer)
+    ctx.slide_of[n] = s._n          # n = stable slide id used by claims.py; s._n = position in deck
+    s._footer = (s._n, footer)
 
 
 def finish_footer(s):
@@ -74,10 +78,11 @@ def _pick(ctx, key, label=None):
     return cs[0] if cs else None
 
 
-def figure(ctx, s, n, key, x, y, w, h, want, label=None, cap_h=0.5):
+def figure(ctx, s, n, key, x, y, w, h, want, label=None, cap_h=0.5, cand=None):
     """White panel + figure crop (or labeled placeholder) + attribution caption under it."""
     p = ctx.papers[key]
-    c = _pick(ctx, key, label)
+    n = s._n
+    c = cand if cand is not None else _pick(ctx, key, label)
     panel = box(s, x, y, w, h, fill=PANEL, line=BORDER, shape=MSO_SHAPE.RECTANGLE, line_w=0.75)
     panel.name = f"Figure panel {key}"
     src = f"arXiv:{p.arxiv}" if p.arxiv else "local PDF"
@@ -660,7 +665,8 @@ def s14_statement(ctx, prs):
     add_text(s, MARGIN + 0.4, 5.5, 11, 0.6,
              "Filtering speed, negation scoring and generative retrieval are crowded; we should reuse them.",
              size=20, color="C9C3B6")
-    add_text(s, SLIDE_W - MARGIN - 0.6, FOOTER_Y, 0.6, 0.3, "14", size=FOOTER_PT, color="C9C3B6",
+    ctx.slide_of[14] = s._n
+    add_text(s, SLIDE_W - MARGIN - 0.6, FOOTER_Y, 0.6, 0.3, str(s._n), size=FOOTER_PT, color="C9C3B6",
              align=PP_ALIGN.RIGHT)
     s.notes_slide.notes_text_frame.text = (
         "Synthesis. Fast filtered ANN (ACORN, FAVOR, EMA), negation-aware scoring (E-SENS) and generative "
@@ -746,38 +752,60 @@ LIST_NAMES = {"rsa": "RSA (our paper)", "sae_dense": "Decoding dense embeddings"
 
 
 def s17_reading(ctx, prs):
-    s = new_slide(prs)
-    chrome(ctx, s, 17, "Reading list", "Papers in this deck",
-           "Titles confirmed against arXiv listings (see qa_report.md). Links open the arXiv abstract page.")
-    order = ["rsa", "acorn", "curator", "favor", "ema", "fann_bench", "nevir_repro", "esens", "sae_embed",
-             "sae_dense", "fashioniq", "cmr_survey", "facap", "cqsid", "onesearch", "genfacet", "casedriven"]
-    col = [order[:9], order[9:]]
-    for ci, keys in enumerate(col):
-        x = MARGIN + ci * 6.2
-        for ri, k in enumerate(keys):
-            p = ctx.papers[k]
-            y = CONTENT_TOP + ri * 0.55
-            name = LIST_NAMES.get(k, p.short)
-            add_text(s, x, y, 3.85, 0.45, f"**{name}**", size=BODY_PT, accent=INK)
-            if p.arxiv:
-                add_text(s, x + 3.9, y, 2.15, 0.45, f"arXiv:{p.arxiv}", size=BODY_PT, color=TEAL, link=p.abs_url)
+    from .paper_slides import FRONTS
+    from .papers import SOURCES
+    rows = [("head", "Our work"), ("paper", "rsa")]
+    for fk, name, _ in FRONTS:
+        rows.append(("head", name))
+        rows += [("paper", p.key) for p in ctx.registry if p.front == fk]
+    rows.append(("head", "Sources (no dedicated slides)"))
+    rows += [("src", i) for i in range(len(SOURCES))]
+    per_col, cols = 10, 2
+    pages = [rows[i:i + per_col * cols] for i in range(0, len(rows), per_col * cols)]
+    for pi, page in enumerate(pages):
+        s = new_slide(prs)
+        chrome(ctx, s, 17 if pi == 0 else f"reading:{pi}", "Reading list",
+               f"Papers in this deck ({pi + 1}/{len(pages)})",
+               "IDs and titles confirmed against arXiv listings (qa_report.md). Links open the abstract page.")
+        for ri, (kind, v) in enumerate(page):
+            x = MARGIN + (ri // per_col) * 6.2
+            y = CONTENT_TOP + (ri % per_col) * 0.49
+            if kind == "head":
+                add_text(s, x, y + 0.08, 6.0, 0.4, v.upper(), size=13, color=TEAL, bold=True, char_spacing=1)
+            elif kind == "src":
+                name, url = SOURCES[v]
+                add_text(s, x, y, 6.0, 0.45, name, size=16, color=TEAL, link=url)
             else:
-                add_text(s, x + 3.9, y, 2.15, 0.45, "local PDF", size=BODY_PT, color=MUTED)
-    finish_footer(s)
-    lines = [f"{ctx.papers[k].short} — {ctx.papers[k].title or ctx.papers[k].expected_title} — "
-             f"{ctx.papers[k].abs_url or 'papers/Random_Semantic_Algebra_latest.pdf'}" for k in order]
-    s.notes_slide.notes_text_frame.text = "Full titles and links:\n" + "\n".join(lines)
+                p = ctx.papers[v]
+                add_text(s, x, y, 3.85, 0.45, f"**{LIST_NAMES.get(v, p.short)}**", size=16, accent=INK)
+                if p.arxiv:
+                    add_text(s, x + 3.9, y, 2.2, 0.45, f"arXiv:{p.arxiv}", size=16, color=TEAL, link=p.abs_url)
+                else:
+                    add_text(s, x + 3.9, y, 2.2, 0.45, "local PDF", size=16, color=MUTED)
+        finish_footer(s)
+        s.notes_slide.notes_text_frame.text = "Full titles:\n" + "\n".join(
+            f"{ctx.papers[v].short}: {ctx.papers[v].title or ctx.papers[v].expected_title} "
+            f"{ctx.papers[v].abs_url}" for k, v in page if k == "paper")
 
 
-SLIDES = [s01_cover, s02_landscape, s03_architecture, s04_filtered_ann, s05_selectivity, s06_rsa,
-          s07_negation, s08_sae, s09_maps, s10_canvas, s11_genretrieval, s12_fusion, s13_production,
-          s14_statement, s15_table, s16_rivals, s17_reading]
+def _order(ctx):
+    """Framing bookends around one section per research front."""
+    from .paper_slides import build_front
+    sec = lambda fk: (lambda c, prs: build_front(c, prs, fk))  # noqa: E731
+    return [s01_cover, s02_landscape, s03_architecture, s06_rsa, s05_selectivity,
+            sec("filtered_ann"), s04_filtered_ann,
+            sec("negation"), s07_negation,
+            sec("sae"), s08_sae, s09_maps,
+            sec("cir"), s10_canvas,
+            sec("genret"), s11_genretrieval,
+            sec("production"), s13_production, s12_fusion,
+            s14_statement, s15_table, s16_rivals, s17_reading]
 
 
 def build(ctx: Ctx, out: Path) -> None:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(SLIDE_W), Inches(SLIDE_H)
-    for fn in SLIDES:
+    for fn in _order(ctx):
         fn(ctx, prs)
     prs.core_properties.title = "Fashion search: what the literature says"
     prs.core_properties.author = "Applied Science, Search & Discovery"

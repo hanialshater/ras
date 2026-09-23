@@ -35,6 +35,8 @@ class Paper:
     labels: list[str] = field(default_factory=list)      # explicit labels, e.g. ["Figure 1"]
     keywords: list[str] = field(default_factory=list)    # caption keywords if no label known
     id_note: str = ""          # ID corrections found during verification
+    front: str = ""            # research front (section) this paper belongs to
+    alt_pdf: str = ""          # non-arXiv PDF URL tried if arXiv fails (e.g. ACL Anthology)
     # Filled at run time
     title: str = ""
     title_source: str = ""
@@ -135,6 +137,67 @@ REGISTRY: list[Paper] = [
 ]
 BY_KEY = {p.key: p for p in REGISTRY}
 
+# ---- second batch (user's reading list, 2026-09-23); IDs/titles confirmed by title search ----
+_NEW = [
+    ("attr_survey", "2508.16263", "Attribute Filtering in Approximate Nearest Neighbor Search: An In-depth Experimental Study",
+     "Attribute-filtering study", "Li et al.", 2025, "filtered_ann"),
+    ("fann_sys", "2602.11443", "Filtered Approximate Nearest Neighbor Search in Vector Databases: System Design and Performance Analysis",
+     "Filtered ANN in vector DBs", "Amanbayev et al.", 2026, "filtered_ann"),
+    ("excise", "2608.05497", "EXCISE: Query-Side Exclusion for Late-Interaction Retrieval",
+     "EXCISE", "Ali et al.", 2026, "negation"),
+    ("neg_taxonomy", "2507.22337", "A Comprehensive Taxonomy of Negation for NLP and Neural Retrievers",
+     "Negation taxonomy", "Petcu et al.", 2025, "negation"),
+    ("promptriever", "2409.11136", "Promptriever: Instruction-Trained Retrievers Can Be Prompted Like Language Models",
+     "Promptriever", "Weller et al.", 2024, "negation"),
+    ("mfollowir", "2501.19264", "mFollowIR: a Multilingual Benchmark for Instruction Following in Retrieval",
+     "mFollowIR (ECIR '25)", "Weller et al.", 2025, "negation"),
+    ("sae_splade", "2604.21511", "From Tokens to Concepts: Leveraging SAE for SPLADE",
+     "SAE for SPLADE", "Zong et al.", 2026, "sae"),
+    ("xetrieval", "2605.29507", "Xetrieval: Mechanistically Explaining Dense Retrieval",
+     "Xetrieval", "Cai et al.", 2026, "sae"),
+    ("fashionmv", "2604.10297", "FashionMV: Product-Level Composed Image Retrieval with Multi-View Fashion Data",
+     "FashionMV", "Yuan et al.", 2026, "cir"),
+    ("fire_cir", "2604.09114", "FIRE-CIR: Fine-grained Reasoning for Composed Fashion Image Retrieval",
+     "FIRE-CIR (CVPR '26)", "Gardères et al.", 2026, "cir"),
+    ("zs_cir", "2506.06602", "Zero Shot Composed Image Retrieval",
+     "Zero-shot CIR", "Kakarla et al.", 2025, "cir"),
+    ("onesearch_v2", "2603.24422", "OneSearch-V2: The Latent Reasoning Enhanced Self-distillation Generative Search Framework",
+     "OneSearch-V2 (Kuaishou)", "Chen et al.", 2026, "genret"),
+    ("varg", "2609.14493", "VARG: Value-Aware and Ranking-Aligned Generative Retrieval for Dynamic E-commerce Search",
+     "VARG (Tmall)", "Chu et al.", 2026, "genret"),
+    ("forge", "2509.20904", "FORGE: Forming Semantic Identifiers for Generative Retrieval in Industrial Datasets",
+     "FORGE", "Fu et al.", 2025, "genret"),
+    ("conv_semsearch", "2601.16492", "LLM-based Semantic Search for Conversational Queries in E-commerce",
+     "Conversational semantic search", "Siddiqui et al.", 2026, "production"),
+    ("beyond_rel", "2609.23646", "Beyond Relevance: Structured Semantic Supervision for Product Search with LLM-Augmented Annotations",
+     "Beyond Relevance", "Koushik et al.", 2026, "production"),
+    ("conv_rec", "2608.27006", "Conversational Recommendation over Live E-Commerce Catalogues with Self-Refreshing Retrieval",
+     "Live-catalogue conv. rec.", "Kapetanovic et al.", 2026, "production"),
+]
+FRONT_OF = {
+    "acorn": "filtered_ann", "curator": "filtered_ann", "fann_bench": "filtered_ann", "favor": "filtered_ann",
+    "ema": "filtered_ann", "nevir_repro": "negation", "esens": "negation", "sae_embed": "sae", "sae_dense": "sae",
+    "fashioniq": "cir", "cmr_survey": "cir", "facap": "cir", "cqsid": "genret", "onesearch": "genret",
+    "genfacet": "production", "casedriven": "production",
+}
+for key, aid, title, short, authors, year, front in _NEW:
+    REGISTRY.append(Paper(key, aid, title, short, authors, year, "method overview; main results",
+                          keywords=["overview", "framework", "architecture", "pipeline", "illustration"],
+                          front=front))
+for p in REGISTRY:
+    p.front = p.front or FRONT_OF.get(p.key, "")
+BY_KEY["sae_dense"].alt_pdf = "https://aclanthology.org/2025.emnlp-main.1345.pdf"
+BY_KEY["ema"].authors = "EMA authors"
+BY_KEY.update({p.key: p for p in REGISTRY})
+
+# Sources cited but not given their own slides (not papers).
+SOURCES = [
+    ("pith.science citation list for FAVOR / EMA", "https://pith.science/citations/1389e938-16cc-45bd-9734-e5b7e409312b"),
+    ("Voxel51: Composed image retrieval at CVPR 2025", "https://voxel51.com/blog/composed-image-retrieval-at-cvpr-2025"),
+    ("LLMSearchRecommender compendium", "https://github.com/alopatenko/LLMSearchRecommender"),
+    ("interp_embed code (Jiang et al.)", "https://github.com/nickjiang2378/interp_embed"),
+]
+
 # Titles as confirmed by arXiv title search (web search results pointing at the
 # arxiv.org/abs page) on 2026-09-23, used when arxiv.org itself is unreachable.
 OFFLINE_TITLES = {
@@ -154,6 +217,7 @@ OFFLINE_TITLES = {
     "onesearch": "OneSearch: A Preliminary Exploration of the Unified End-to-End Generative Framework for E-commerce Search",
     "genfacet": "GenFacet: End-to-End Generative Faceted Search via Multi-Task Preference Alignment in E-Commerce",
     "casedriven": "A Case-Driven Multi-Agent Framework for E-Commerce Search Relevance",
+    **{k: t for k, _, t, *_ in _NEW},
 }
 
 LICENSE_NAMES = {
@@ -253,6 +317,14 @@ def fetch(p: Paper, offline_meta: dict, allow_network: bool = True) -> None:
         p.license = cached.get("license", "unknown")
         p.license_url = cached.get("license_url", "")
         p.license_source = cached.get("license_source") or "not readable: arxiv.org blocked from build host"
+    if not pdf.exists() and p.alt_pdf and allow_network:
+        try:
+            data = _get(p.alt_pdf, timeout=90)
+            if data[:4] == b"%PDF":
+                PAPERS.mkdir(exist_ok=True)
+                pdf.write_bytes(data)
+        except (urllib.error.URLError, OSError):
+            pass
     if not pdf.exists() and net_ok:
         try:
             data = _get(f"https://arxiv.org/pdf/{p.arxiv}", timeout=90)

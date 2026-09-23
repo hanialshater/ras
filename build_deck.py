@@ -26,17 +26,17 @@ DECK = ROOT / "deck" / "fashion_search_landscape.pptx"
 FIG = ROOT / "figures"
 EQ = ROOT / "equations"
 RENDER = ROOT / "build" / "render"
-DIAGRAM_SLIDES = {2: "d1_landscape_map_slide02", 3: "d2_search_architecture_slide03",
-                  5: "d3_selectivity_chart_slide05", 7: "d6_negation_decomposition_slide07",
-                  9: "semantic_map_axes_layers_slide09", 10: "d4_canvas_layer_algebra_slide10",
-                  11: "d5_semantic_id_trie_slide11"}
+# stable slide id -> diagram SVG name (resolved to deck positions after the build)
+DIAGRAM_SLIDES = {2: "d1_landscape_map", 3: "d2_search_architecture", 5: "d3_selectivity_chart",
+                  7: "d6_negation_decomposition", 9: "semantic_map_axes_layers", 10: "d4_canvas_layer_algebra",
+                  11: "d5_semantic_id_trie"}
 
 
 def soffice() -> str | None:
     return shutil.which("soffice") or shutil.which("libreoffice")
 
 
-def export_pdf_and_pngs(pptx: Path) -> list[str]:
+def export_pdf_and_pngs(pptx: Path, slide_of: dict) -> list[str]:
     notes = []
     exe = soffice()
     if not exe:
@@ -53,9 +53,12 @@ def export_pdf_and_pngs(pptx: Path) -> list[str]:
         if shutil.which("pdftocairo"):
             dd = ROOT / "diagrams"
             dd.mkdir(exist_ok=True)
-            for n, name in DIAGRAM_SLIDES.items():
+            for old in dd.glob("*.svg"):
+                old.unlink()
+            for sid, name in DIAGRAM_SLIDES.items():
+                n = slide_of[sid]
                 subprocess.run(["pdftocairo", "-svg", "-f", str(n), "-l", str(n), str(pdf),
-                                str(dd / f"{name}.svg")], check=True)
+                                str(dd / f"{name}_slide{n:02d}.svg")], check=True)
         notes.append(f"Exported {pdf.name} and {len(list(RENDER.glob('slide-*.png')))} slide PNGs "
                      f"to build/render/ (LibreOffice headless + pdftoppm).")
     return notes
@@ -86,21 +89,28 @@ def main() -> None:
     equations.render_all(EQ)
 
     print("4/6 numbers: verify against PDFs")
+    from deckbuild.paper_content import CONTENT
+    for key, spec in CONTENT.items():
+        for role in spec.get("roles", ["method", "results"]):
+            for text, pats, fallback in spec.get(role, {}).get("claims", []):
+                claims_mod.CLAIMS.append(claims_mod.Claim(f"{key}:{role}", text, key, pats, fallback=fallback))
     cl = claims_mod.check_all(papers.BY_KEY, ROOT)
     bad = [c for c in cl if c.show and c.status.startswith("NOT FOUND")]
     for c in bad:
         print(f"    !! not found in PDF: slide {c.slide}: {c.text}")
 
     print("5/6 deck")
-    ctx = slides.Ctx(ROOT, papers.BY_KEY, cands, EQ, FIG)
+    ctx = slides.Ctx(ROOT, papers.BY_KEY, cands, EQ, FIG, registry=reg)
     slides.build(ctx, DECK)
     print(f"    wrote {DECK.relative_to(ROOT)}")
 
     print("6/6 export + QA report")
-    render_notes = [] if a.no_render else export_pdf_and_pngs(DECK)
+    render_notes = [] if a.no_render else export_pdf_and_pngs(DECK, ctx.slide_of)
     layout_notes_file = ROOT / "deckbuild" / "visual_qa_notes.md"
     layout_notes = [l[2:].strip() for l in layout_notes_file.read_text().splitlines() if l.startswith("- ")] \
         if layout_notes_file.exists() else []
+    for c in cl:                      # stable slide ids -> actual slide numbers
+        c.slide = ctx.slide_of.get(c.slide, c.slide)
     qa.write(ROOT / "qa_report.md", reg, cands, cl, ctx.figure_log, layout_notes, render_notes)
     print("    wrote qa_report.md")
 
