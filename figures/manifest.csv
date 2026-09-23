@@ -1,0 +1,29 @@
+paper,arxiv_id,figure_label,page,caption_text,license,license_url,file,selected,flag
+rsa,local,Figure 1,2,Figure 1: Compiled semantic execution separates expensive supervision from online search. Exact catalog predicates remain conventional filters. Latent predicates are compiled offline into tiny programs over a shared low-bit item representation and can be evaluated as soft eligibility tests during dense ANN traversal.,author's own,,rsa_fig1.png,yes,
+rsa,local,Figure 2,6,Figure 2: Residual-optimized LUTs close most of the gap to the full-precision linear classifier in the original structured-label mechanism benchmark.,author's own,,rsa_fig2.png,,
+rsa,local,Figure 3,6,"Figure 3: Calibration, rather than a complex combination rule, drives the improvement in semantic conjunction.",author's own,,rsa_fig3.png,,
+rsa,local,Table 1,6,Table 1: Mechanism benchmark (14 concepts).,author's own,,rsa_tab1.png,,
+rsa,local,Table 2,6,Table 2: Composition of independently learned predicates in the mechanism study.,author's own,,rsa_tab2.png,,
+rsa,local,Table 3,7,"Table 3: Cross-modal predicate quality averaged over three strict splits, with packed storage accounting. For PQ64, the first number is the persistent linear head; the second is the materialized active LUT used by the native executor.",author's own,,rsa_tab3.png,,
+rsa,local,Table 4,7,"Table 4: Main independent-teacher result at 20% retention over 600 query–split cases. Recall and purity are measured within the exact-filtered top-5,000 ANN pool. For PQ64, “stored/active” separates the compact persistent linear head from the materialized lookup table used by the native executor.",author's own,,rsa_tab4.png,,
+rsa,local,Table 5,7,"Table 5: Illustrative persistent semantic payload for 5M items and 100k compiled concepts. Decimal MB; excludes HNSW graph edges and container overhead. PQ64 includes 100k compact linear heads plus one shared float codebook, not one persistent 65.5 KB LUT per concept.",author's own,,rsa_tab5.png,,
+rsa,local,Figure 4,8,Figure 4: Candidate-budget frontier on the independent-teacher benchmark. Binary1-LS2-int4 is the strongest tiny-program point; PQ64 is the strongest compressed quality point; FP32 remains the best search-side linear proxy.,author's own,,rsa_fig4.png,yes,
+rsa,local,Table 6,8,"Table 6: Single-threaded native throughput at 100k candidates (million candidates/s). Real held-out rows/programs, 500k resident items, median of five repetitions. The FP32 column is a scalar reference implementation rather than an optimized BLAS baseline.",author's own,,rsa_tab6.png,,
+rsa,local,Table 7,9,"Table 7: Reviewer-controlled live semantic HNSW result. Values are means over three predetermined predicate sets, each evaluated on 1,000 queries. “2× OF” is the largest completed selectivity-aware over-fetch budget, approximately 2K/s. None of the 15 predicate- set/selectivity conditions reaches live recall within 0.005 at any tested over-fetch point.",author's own,,rsa_tab7.png,yes,
+rsa,local,Table 8,11,"Table 8: Single-thread semantic microkernel latency in milliseconds (median of five repetitions, real held-out rows/programs tiled to 500k resident items). These are not end-to-end search latencies. The FP32 path is a scalar reference implementation rather than optimized BLAS.",author's own,,rsa_tab8.png,,
+acorn,2403.04871,,,"NOT EXTRACTED (PDF not available); wanted: predicate-agnostic search / two-hop neighbor expansion, or recall vs. selectivity",unknown,,,,placeholder
+curator,2601.01291,,,NOT EXTRACTED (PDF not available); wanted: method overview,unknown,,,,placeholder
+favor,2605.07770,,,NOT EXTRACTED (PDF not available); wanted: method overview,unknown,,,,placeholder
+ema,2606.00734,,,NOT EXTRACTED (PDF not available); wanted: method overview,unknown,,,,placeholder
+fann_bench,2507.21989,,,NOT EXTRACTED (PDF not available); wanted: benchmark overview,unknown,,,,placeholder
+nevir_repro,2502.13506,,,NOT EXTRACTED (PDF not available); wanted: main results showing negation performance,unknown,,,,placeholder
+esens,2608.30130,,,NOT EXTRACTED (PDF not available); wanted: method overview (query decomposition and trap penalty),unknown,,,,placeholder
+sae_embed,2512.10092,,,NOT EXTRACTED (PDF not available); wanted: Figure 1: converting documents into interpretable SAE embeddings,unknown,,,,placeholder
+sae_dense,2506.00041,,,NOT EXTRACTED (PDF not available); wanted: method overview,unknown,,,,placeholder
+fashioniq,1905.12794,,,"NOT EXTRACTED (PDF not available); wanted: dataset examples (reference image, relative caption, target image)",unknown,,,,placeholder
+cmr_survey,2503.01334,,,NOT EXTRACTED (PDF not available); wanted: taxonomy,unknown,,,,placeholder
+facap,2507.07135,,,NOT EXTRACTED (PDF not available); wanted: dataset examples,unknown,,,,placeholder
+cqsid,2605.14434,,,NOT EXTRACTED (PDF not available); wanted: framework / architecture overview,unknown,,,,placeholder
+onesearch,2509.03236,,,NOT EXTRACTED (PDF not available); wanted: framework / architecture overview,unknown,,,,placeholder
+genfacet,2603.19665,,,NOT EXTRACTED (PDF not available); wanted: framework overview,unknown,,,,placeholder
+casedriven,2605.05991,,,NOT EXTRACTED (PDF not available); wanted: framework overview,unknown,,,,placeholder

@@ -1,0 +1,66 @@
+% All deck equations (LaTeX source). Requires amsmath, amssymb.
+
+% eq01_rrf: Reciprocal rank fusion
+\[
+\mathrm{RRF}(d)=\sum_{r\in R}\frac{1}{k+\mathrm{rank}_r(d)},\quad k=60
+\]
+
+% eq02_gam: Fusion as a GAM (EBM generalizes RRF)
+\[
+s(d)=\sum_{r} f_r\big(\mathrm{rank}_r(d)\big)+\sum_{r<r'} f_{rr'}\big(\mathrm{rank}_r(d),\mathrm{rank}_{r'}(d)\big)
+\]
+
+% eq03_calibration: RSA calibration
+\[
+p_C(x)=\sigma\big(a'_C\,F_C(x)+c_C\big)
+\]
+
+% eq04_composition: RSA composition
+\[
+S_Q(x)=\sum_{C\in Q^+}\log p_C(x)+\sum_{C\in Q^-}\log\big(1-p_C(x)\big)
+\]
+
+% eq05_popcount: RSA popcount kernel
+\[
+P_C(x)=a_C\,n_+(x)+\Delta_C\sum_{t=0}^{3}2^t\,\mathrm{popcnt}\big(B_x\wedge M_{Ct}\big)
+\]
+
+% eq06_memory: Joint memory
+\[
+M(N,K)=N\,B_{\mathrm{item}}+K\,B_{\mathrm{program}}
+\]
+
+% eq07_traversal: Live traversal rule
+\[
+\text{navigate by } s_{\mathrm{dense}}(q,x),\qquad \text{admit } x \text{ if } S_{\mathrm{semantic}}(x)\geq\tau
+\]
+
+% eq08_sae: Sparse autoencoder
+\[
+z=\mathrm{ReLU}(W_e x+b_e),\qquad \mathcal{L}=\lVert x-W_d z\rVert_2^2+\lambda\lVert z\rVert_1
+\]
+
+% eq09_rq: Residual quantization for semantic IDs
+\[
+r_0=e(x),\quad c_\ell=\arg\min_k\lVert r_{\ell-1}-C_\ell[k]\rVert,\quad r_\ell=r_{\ell-1}-C_\ell[c_\ell],\quad \mathrm{ID}(x)=(c_1,\dots,c_L)
+\]
+
+% eq10_mapcoord: Map coordinate from an LLM-designed axis
+\[
+u_k(x)=\mathrm{rank}\big(\sigma(w_k^\top x+b_k)\big)/N
+\]
+
+% eq11_esens: E-SENS scoring rule (paper's form)
+\[
+S(d)=s(d,q_{\mathrm{target}})-\beta\,s(d,q_{\mathrm{trap}})
+\]
+
+% eq11s_esens_schematic: E-SENS, schematic (brief; not used on slides)
+\[
+s(d)=\mathrm{sim}(q^+,d)-\lambda\,\mathrm{sim}(q^-,d)
+\]
+
+% eq12_canvas: Canvas mask as layer algebra
+\[
+M=R_{\mathrm{base}}\wedge L_{\mathrm{dress}}\wedge L_{\mathrm{stock,DE}}\wedge\neg\,L_{\mathrm{floral}}
+\]

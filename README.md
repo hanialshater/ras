@@ -17,6 +17,9 @@ compact design is now **Binary1-LS2-int4**:
 The manuscript is titled **Compiled Semantic Predicates for Approximate Nearest
 Neighbor Search**.
 
+A literature-landscape deck built on this work (fashion search agenda) lives in
+[`deck/`](deck/README.md) and is rebuilt with `python build_deck.py`.
+
 ## Headline results
 
 ### Semantic quality

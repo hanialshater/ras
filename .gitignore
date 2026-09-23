@@ -8,3 +8,7 @@ venv/
 results*/
 outputs*/
 *.zip
+build/
+# third-party PDFs are downloaded by build_deck.py, not redistributed
+papers/*.pdf
+!papers/Random_Semantic_Algebra_latest.pdf
